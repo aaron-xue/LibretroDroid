@@ -396,6 +396,10 @@ retro_hw_context_reset_t Environment::getHwContextDestroy() const {
     return hw_context_destroy;
 }
 
+void Environment::clearHwContextDestroy() {
+    hw_context_destroy = nullptr;
+}
+
 struct retro_disk_control_callback* Environment::getRetroDiskControlCallback() const {
     return retro_disk_control_callback;
 }

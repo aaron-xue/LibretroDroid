@@ -83,6 +83,7 @@ public:
 
     retro_hw_context_reset_t getHwContextReset() const;
     retro_hw_context_reset_t getHwContextDestroy() const;
+    void clearHwContextDestroy();
 
     struct retro_disk_control_callback* getRetroDiskControlCallback() const;
 

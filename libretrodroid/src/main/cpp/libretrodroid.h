@@ -100,6 +100,8 @@ public:
     void pause();
     void destroy();
 
+    void destroyGraphicsContext();
+
     void reset();
 
     void loadGameFromPath(const std::string &gamePath);

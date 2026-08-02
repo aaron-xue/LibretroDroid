@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.properties.Delegates
@@ -116,8 +117,24 @@ class GLRetroView(
 
     @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     fun onDestroy() = catchExceptions {
+        releaseGraphicsContext()
         LibretroDroid.destroy()
         lifecycle = null
+    }
+
+    private fun releaseGraphicsContext() {
+        if (Thread.currentThread().name.startsWith("GLThread")) {
+            catchExceptions { LibretroDroid.destroyGraphicsContext() }
+            return
+        }
+        val latch = CountDownLatch(1)
+        queueEvent {
+            catchExceptions { LibretroDroid.destroyGraphicsContext() }
+            latch.countDown()
+        }
+        if (!latch.await(GRAPHICS_TEARDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG_LOG, "Graphics context teardown timed out; the GL thread is already gone")
+        }
     }
 
     private fun getDeviceLanguage() = Locale.getDefault().language
@@ -543,6 +560,8 @@ class GLRetroView(
 
     companion object {
         private val TAG_LOG = GLRetroView::class.java.simpleName
+
+        private const val GRAPHICS_TEARDOWN_TIMEOUT_MS = 2000L
 
         const val MOTION_SOURCE_DPAD = LibretroDroid.MOTION_SOURCE_DPAD
         const val MOTION_SOURCE_ANALOG_LEFT = LibretroDroid.MOTION_SOURCE_ANALOG_LEFT

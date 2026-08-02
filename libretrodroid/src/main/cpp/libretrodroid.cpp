@@ -470,6 +470,19 @@ void LibretroDroid::loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles) 
     afterGameLoad();
 }
 
+void LibretroDroid::destroyGraphicsContext() {
+    std::lock_guard<std::mutex> lock(coreLock);
+
+    auto hwContextDestroy = Environment::getInstance().getHwContextDestroy();
+    if (hwContextDestroy == nullptr) {
+        return;
+    }
+
+    LOGD("Releasing the core's graphics context");
+    hwContextDestroy();
+    Environment::getInstance().clearHwContextDestroy();
+}
+
 void LibretroDroid::destroy() {
     std::lock_guard<std::mutex> lock(coreLock);
 
@@ -477,10 +490,6 @@ void LibretroDroid::destroy() {
 
     NetpacketBridge::getInstance().stop();
     NetpacketBridge::getInstance().clearCoreInterface();
-
-    if (Environment::getInstance().getHwContextDestroy() != nullptr) {
-        Environment::getInstance().getHwContextDestroy()();
-    }
 
     if (core) {
         core->retro_unload_game();

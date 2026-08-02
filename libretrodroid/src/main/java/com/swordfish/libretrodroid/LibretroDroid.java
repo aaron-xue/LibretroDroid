@@ -130,6 +130,8 @@ public class LibretroDroid {
     public static native void pause();
     public static native void destroy();
 
+    public static native void destroyGraphicsContext();
+
     public static native boolean step(GLRetroView retroView);
 
     public static native void reset();

@@ -502,6 +502,17 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_destroy(
     }
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_destroyGraphicsContext(
+    JNIEnv* env,
+    jclass obj
+) {
+    try {
+        LibretroDroid::getInstance().destroyGraphicsContext();
+    } catch (std::exception &exception) {
+        LOGE("Error in destroyGraphicsContext: %s", exception.what());
+    }
+}
+
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_resume(
     JNIEnv* env,
     jclass obj
