@@ -70,6 +70,7 @@ public:
     void updateAspectRatio(float aspectRatio);
     void updateScreenSize(unsigned screenWidth, unsigned screenHeight);
     void updateViewportSize(Rect viewportRect);
+    void resetGLState();
     void updateViewportAlignment(unsigned int viewportAlignment);
     void updateRendererSize(unsigned width, unsigned height);
     void updateRotation(float rotation);
@@ -89,6 +90,7 @@ public:
 
 private:
     void updateProgram();
+    ShaderManager::Config effectiveShaderConfig();
 
     float getScreenDensity();
     float getTextureWidth();
@@ -97,6 +99,7 @@ private:
     void initializeRenderer(RenderingOptions renderingOptions);
 
 private:
+    int openglESVersion = 2;
     ShaderManager::Config requestedShaderConfig = ShaderManager::Config {
         ShaderManager::Type::SHADER_DEFAULT
     };

@@ -1,1 +1,1 @@
-include ':app', ':libretrodroid'
+include ':libretrodroid'

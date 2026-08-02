@@ -17,6 +17,9 @@
 
 #include "shadermanager.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace libretrodroid {
 
 const std::string ShaderManager::defaultShaderVertex =
@@ -1527,6 +1530,111 @@ const std::string ShaderManager::cut3UpscalePass2Fragment =
     "  gl_FragColor = vec4(final.rgb, 1.0);\n"
     "}";
 
+/*
+ * Snapdragon(TM) Game Super Resolution 1.0 (SGSR) upscale pass.
+ *
+ * The fragment shader below is adapted from sgsr1_shader_mobile.frag in
+ * https://github.com/SnapdragonGameStudios/snapdragon-gsr
+ * Copyright (c) 2023-2025, Qualcomm Innovation Center, Inc. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause (full text in SGSR_LICENSE).
+ *
+ * Port notes: GLSL ES 3.10 for core textureGather, sampler/size uniforms renamed
+ * to this renderer's conventions, RGBA operation mode fixed (gather component 1),
+ * precision qualifiers removed from constructor expressions for strict compilers.
+ */
+const std::string ShaderManager::sgsrUpscaleVertex =
+    "#version 310 es\n"
+    "precision mediump float;\n"
+    "layout(location = 0) in vec4 vPosition;\n"
+    "layout(location = 1) in vec2 vCoordinate;\n"
+    "out highp vec4 in_TEXCOORD0;\n"
+    "void main() {\n"
+    "  in_TEXCOORD0 = vec4(vCoordinate, 0.0, 0.0);\n"
+    "  gl_Position = vPosition;\n"
+    "}\n";
+
+const std::string ShaderManager::sgsrUpscaleFragmentBody =
+    "in highp vec4 in_TEXCOORD0;\n"
+    "layout(location = 0) out vec4 out_Target0;\n"
+    "\n"
+    "#define EdgeThreshold (8.0 / 255.0)\n"
+    "#define EdgeSharpness 2.0\n"
+    "\n"
+    "float fastLanczos2(float x) {\n"
+    "  float wA = x - 4.0;\n"
+    "  float wB = x * wA - wA;\n"
+    "  wA *= wA;\n"
+    "  return wB * wA;\n"
+    "}\n"
+    "\n"
+    "vec2 weightY(float dx, float dy, float c, float std) {\n"
+    "  float x = ((dx * dx) + (dy * dy)) * 0.55 + clamp(abs(c) * std, 0.0, 1.0);\n"
+    "  float w = fastLanczos2(x);\n"
+    "  return vec2(w, w * c);\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "  highp vec2 inputSize = SGSR_SIZE;\n"
+    "  highp vec4 viewportInfo = vec4(1.0 / inputSize.x, 1.0 / inputSize.y, inputSize.x, inputSize.y);\n"
+    "\n"
+    "  vec4 color;\n"
+    "  color.xyz = textureLod(SGSR_INPUT, in_TEXCOORD0.xy, 0.0).xyz;\n"
+    "\n"
+    "  highp vec2 imgCoord = ((in_TEXCOORD0.xy * viewportInfo.zw) + vec2(-0.5, 0.5));\n"
+    "  highp vec2 imgCoordPixel = floor(imgCoord);\n"
+    "  highp vec2 coord = (imgCoordPixel * viewportInfo.xy);\n"
+    "  vec2 pl = (imgCoord + (-imgCoordPixel));\n"
+    "  vec4 left = textureGather(SGSR_INPUT, coord, 1);\n"
+    "\n"
+    "  float edgeVote = abs(left.z - left.y) + abs(color.y - left.y) + abs(color.y - left.z);\n"
+    "  if (edgeVote > EdgeThreshold) {\n"
+    "    coord.x += viewportInfo.x;\n"
+    "\n"
+    "    vec4 right = textureGather(SGSR_INPUT, coord + vec2(viewportInfo.x, 0.0), 1);\n"
+    "    vec4 upDown;\n"
+    "    upDown.xy = textureGather(SGSR_INPUT, coord + vec2(0.0, -viewportInfo.y), 1).wz;\n"
+    "    upDown.zw = textureGather(SGSR_INPUT, coord + vec2(0.0, viewportInfo.y), 1).yx;\n"
+    "\n"
+    "    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n"
+    "    left = left - vec4(mean);\n"
+    "    right = right - vec4(mean);\n"
+    "    upDown = upDown - vec4(mean);\n"
+    "    color.w = color.y - mean;\n"
+    "\n"
+    "    float sum = (((((abs(left.x) + abs(left.y)) + abs(left.z)) + abs(left.w)) + (((abs(right.x) + abs(right.y)) + abs(right.z)) + abs(right.w))) + (((abs(upDown.x) + abs(upDown.y)) + abs(upDown.z)) + abs(upDown.w)));\n"
+    "    float std = 2.181818 / sum;\n"
+    "\n"
+    "    vec2 aWY = weightY(pl.x, pl.y + 1.0, upDown.x, std);\n"
+    "    aWY += weightY(pl.x - 1.0, pl.y + 1.0, upDown.y, std);\n"
+    "    aWY += weightY(pl.x - 1.0, pl.y - 2.0, upDown.z, std);\n"
+    "    aWY += weightY(pl.x, pl.y - 2.0, upDown.w, std);\n"
+    "    aWY += weightY(pl.x + 1.0, pl.y - 1.0, left.x, std);\n"
+    "    aWY += weightY(pl.x, pl.y - 1.0, left.y, std);\n"
+    "    aWY += weightY(pl.x, pl.y, left.z, std);\n"
+    "    aWY += weightY(pl.x + 1.0, pl.y, left.w, std);\n"
+    "    aWY += weightY(pl.x - 1.0, pl.y - 1.0, right.x, std);\n"
+    "    aWY += weightY(pl.x - 2.0, pl.y - 1.0, right.y, std);\n"
+    "    aWY += weightY(pl.x - 2.0, pl.y, right.z, std);\n"
+    "    aWY += weightY(pl.x - 1.0, pl.y, right.w, std);\n"
+    "\n"
+    "    float finalY = aWY.y / aWY.x;\n"
+    "\n"
+    "    float maxY = max(max(left.y, left.z), max(right.x, right.w));\n"
+    "    float minY = min(min(left.y, left.z), min(right.x, right.w));\n"
+    "    finalY = clamp(EdgeSharpness * finalY, minY, maxY);\n"
+    "\n"
+    "    float deltaY = finalY - color.w;\n"
+    "    deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);\n"
+    "\n"
+    "    color.x = clamp((color.x + deltaY), 0.0, 1.0);\n"
+    "    color.y = clamp((color.y + deltaY), 0.0, 1.0);\n"
+    "    color.z = clamp((color.z + deltaY), 0.0, 1.0);\n"
+    "  }\n"
+    "\n"
+    "  color.w = 1.0;\n"
+    "  out_Target0.xyzw = color;\n"
+    "}\n";
+
 ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& config) {
     switch (config.type) {
     case Type::SHADER_DEFAULT: {
@@ -1543,6 +1651,52 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
 
     case Type::SHADER_SHARP: {
         return { { { defaultShaderVertex, defaultSharpFragment, true, 1.0 } }, true };
+    }
+
+    case Type::SHADER_UPSCALE_SGSR: {
+        int prePasses = 1;
+        auto it = config.params.find("sgsr_prepasses");
+        if (it != config.params.end()) {
+            prePasses = std::max(0, std::min(3, std::atoi(it->second.c_str())));
+        }
+        std::string base = "default";
+        auto baseIt = config.params.find("sgsr_base");
+        if (baseIt != config.params.end()) {
+            base = baseIt->second;
+        }
+        const std::string* baseFragment = nullptr;
+        if (base == "crt") {
+            baseFragment = &crtShaderFragment;
+        } else if (base == "lcd") {
+            baseFragment = &lcdShaderFragment;
+        } else if (base == "sharp") {
+            baseFragment = &defaultSharpFragment;
+        }
+        std::string header =
+            "#version 310 es\n"
+            "precision mediump float;\n"
+            "precision highp int;\n"
+            "uniform mediump sampler2D texture;\n"
+            "uniform mediump sampler2D previousPass;\n"
+            "uniform highp vec2 textureSize;\n";
+        std::vector<Pass> passes;
+        for (int i = 0; i <= prePasses; ++i) {
+            float outputScale = i == prePasses ? 1.0f : float(1 << (i + 1));
+            if (i == 0 && baseFragment != nullptr && prePasses > 0) {
+                passes.push_back({ defaultShaderVertex, *baseFragment, true, outputScale });
+                continue;
+            }
+            std::string defines;
+            if (i == 0) {
+                defines = "#define SGSR_INPUT texture\n#define SGSR_SIZE textureSize\n";
+            } else {
+                float inputScale = float(1 << i);
+                defines = "#define SGSR_INPUT previousPass\n#define SGSR_SIZE (textureSize * " +
+                    std::to_string(inputScale) + ")\n";
+            }
+            passes.push_back({ sgsrUpscaleVertex, header + defines + sgsrUpscaleFragmentBody, true, outputScale });
+        }
+        return { passes, true };
     }
 
     case Type::SHADER_UPSCALE_CUT: {

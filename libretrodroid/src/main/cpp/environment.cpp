@@ -25,11 +25,12 @@
 #include <EGL/egl.h>
 #include <unordered_map>
 
-#include "../../libretro-common/include/libretro.h"
+#include "retro_netpacket_api.h"
 #include "log.h"
 #include "environment.h"
 #include "vfs/vfs.h"
 #include "microphone/microphoneinterface.h"
+#include "netpacket.h"
 
 void Environment::initialize(
     const std::string &requiredSystemDirectory,
@@ -47,6 +48,10 @@ void Environment::deinitialize() {
     hw_context_destroy = nullptr;
 
     retro_disk_control_callback = nullptr;
+
+    memoryDescriptors.clear();
+    memoryMap = {};
+    hasMemoryMap = false;
 
     savesDirectory = std::string();
     systemDirectory = std::string();
@@ -303,6 +308,15 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             LOGD("Called RETRO_ENVIRONMENT_GET_PERF_INTERFACE");
             return false;
 
+        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS: {
+            auto *received = static_cast<const struct retro_memory_map *>(data);
+            memoryDescriptors.assign(received->descriptors, received->descriptors + received->num_descriptors);
+            memoryMap.descriptors = memoryDescriptors.data();
+            memoryMap.num_descriptors = static_cast<unsigned>(memoryDescriptors.size());
+            hasMemoryMap = !memoryDescriptors.empty();
+            return true;
+        }
+
             // TODO... RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO can also change frame-rate
         case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
         case RETRO_ENVIRONMENT_SET_GEOMETRY: {
@@ -334,6 +348,13 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE:
             LOGD("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");
             return environment_handle_get_microphone_interface(static_cast<struct retro_microphone_interface*>(data));
+
+        case RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE:
+            LOGI("Called RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE");
+            libretrodroid::NetpacketBridge::getInstance().setCoreInterface(
+                static_cast<const wn_netpacket_callback*>(data)
+            );
+            return true;
 
         default:
             LOGD("callback environment has been called: %u", cmd);
@@ -377,6 +398,10 @@ retro_hw_context_reset_t Environment::getHwContextDestroy() const {
 
 struct retro_disk_control_callback* Environment::getRetroDiskControlCallback() const {
     return retro_disk_control_callback;
+}
+
+const struct retro_memory_map* Environment::getMemoryMap() const {
+    return hasMemoryMap ? &memoryMap : nullptr;
 }
 
 int Environment::getPixelFormat() const {

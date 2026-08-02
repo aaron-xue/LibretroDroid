@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.13.2)
 # now build app's shared lib
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -Wall")
 
-add_definitions("-DVFS_FRONTEND -DHAVE_STRL")
+add_definitions("-DVFS_FRONTEND -DHAVE_STRL -DHAVE_CHD")
 
 # Let's include oboe
 set (OBOE_DIR oboe)
@@ -19,6 +19,73 @@ set (LIBRETRO_COMMON
         libretro/libretro-common/encodings/encoding_utf.c
         libretro/libretro-common/file/file_path.c
         libretro/libretro-common/time/rtime.c
+        libretro/libretro-common/streams/chd_stream.c
+        libretro/libretro-common/streams/file_stream.c
+        libretro/libretro-common/streams/interface_stream.c
+        libretro/libretro-common/streams/memory_stream.c
+        libretro/libretro-common/encodings/encoding_crc32.c
+        libretro/libretro-common/formats/cdfs/cdfs.c
+)
+
+# Vendored libchdr (from beetle-psx) so RetroAchievements can hash .chd discs.
+include_directories("libchdr/include")
+set (LIBCHDR
+        libchdr/deps/lzma-25.01/src/LzmaDec.c
+        libchdr/deps/zstd-1.5.7/zstddeclib.c
+        libchdr/src/libchdr_bitstream.c
+        libchdr/src/libchdr_cdrom.c
+        libchdr/src/libchdr_chd.c
+        libchdr/src/libchdr_codec_cdfl.c
+        libchdr/src/libchdr_codec_cdlz.c
+        libchdr/src/libchdr_codec_cdzl.c
+        libchdr/src/libchdr_codec_cdzs.c
+        libchdr/src/libchdr_codec_flac.c
+        libchdr/src/libchdr_codec_huff.c
+        libchdr/src/libchdr_codec_lzma.c
+        libchdr/src/libchdr_codec_zlib.c
+        libchdr/src/libchdr_codec_zstd.c
+        libchdr/src/libchdr_flac.c
+        libchdr/src/libchdr_huffman.c
+)
+
+add_definitions("-DRC_CLIENT_SUPPORTS_HASH")
+include_directories("rcheevos/include")
+include_directories("rcheevos/src")
+
+set (RCHEEVOS
+        rcheevos/src/rc_client.c
+        rcheevos/src/rc_client_external.c
+        rcheevos/src/rc_compat.c
+        rcheevos/src/rc_libretro.c
+        rcheevos/src/rc_util.c
+        rcheevos/src/rc_version.c
+        rcheevos/src/rapi/rc_api_common.c
+        rcheevos/src/rapi/rc_api_editor.c
+        rcheevos/src/rapi/rc_api_info.c
+        rcheevos/src/rapi/rc_api_runtime.c
+        rcheevos/src/rapi/rc_api_user.c
+        rcheevos/src/rcheevos/alloc.c
+        rcheevos/src/rcheevos/condition.c
+        rcheevos/src/rcheevos/condset.c
+        rcheevos/src/rcheevos/consoleinfo.c
+        rcheevos/src/rcheevos/format.c
+        rcheevos/src/rcheevos/lboard.c
+        rcheevos/src/rcheevos/memref.c
+        rcheevos/src/rcheevos/operand.c
+        rcheevos/src/rcheevos/rc_validate.c
+        rcheevos/src/rcheevos/richpresence.c
+        rcheevos/src/rcheevos/runtime.c
+        rcheevos/src/rcheevos/runtime_progress.c
+        rcheevos/src/rcheevos/trigger.c
+        rcheevos/src/rcheevos/value.c
+        rcheevos/src/rhash/aes.c
+        rcheevos/src/rhash/cdreader.c
+        rcheevos/src/rhash/hash.c
+        rcheevos/src/rhash/hash_disc.c
+        rcheevos/src/rhash/hash_encrypted.c
+        rcheevos/src/rhash/hash_rom.c
+        rcheevos/src/rhash/hash_zip.c
+        rcheevos/src/rhash/md5.c
 )
 
 add_library(libretrodroid SHARED
@@ -56,6 +123,8 @@ add_library(libretrodroid SHARED
         fpssync.cpp
         environment.h
         environment.cpp
+        netpacket.h
+        netpacket.cpp
         input.h
         input.cpp
         shadermanager.h
@@ -86,7 +155,10 @@ add_library(libretrodroid SHARED
         microphone/microphone.cpp
         microphone/microphoneinterface.h
         microphone/microphoneinterface.cpp
+        retroachievements.cpp
         ${LIBRETRO_COMMON}
+        ${LIBCHDR}
+        ${RCHEEVOS}
 )
 
 # Support 16k pages for Android 15
@@ -95,8 +167,9 @@ target_link_options(libretrodroid PRIVATE "-Wl,-z,max-page-size=16384")
 # add lib dependencies
 target_link_libraries(libretrodroid
                       android
-                      log 
+                      log
                       EGL
                       oboe
                       GLESv3
+                      z
 )

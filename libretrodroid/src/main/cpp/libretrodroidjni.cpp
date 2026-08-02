@@ -43,6 +43,7 @@
 #include "renderers/es2/imagerendereres2.h"
 #include "renderers/es3/imagerendereres3.h"
 #include "utils/jnistring.h"
+#include "netpacket.h"
 
 namespace libretrodroid {
 
@@ -525,12 +526,12 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_pause(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
     JNIEnv* env,
     jclass obj,
     jobject glRetroView
 ) {
-    LibretroDroid::getInstance().step();
+    bool ranNewFrame = LibretroDroid::getInstance().step();
 
     if (LibretroDroid::getInstance().requiresVideoRefresh()) {
         LibretroDroid::getInstance().clearRequiresVideoRefresh();
@@ -546,6 +547,8 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
             env->CallVoidMethod(glRetroView, sendRumbleStrengthMethodID, port, weak, strong);
         });
     }
+
+    return ranNewFrame;
 }
 
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setRumbleEnabled(
@@ -604,6 +607,91 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_refreshAsp
     jclass obj
 ) {
     LibretroDroid::getInstance().refreshAspectRatio();
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketHasCore(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LibretroDroid::getInstance().netpacketHasCore() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketStartHost(
+    JNIEnv* env,
+    jclass obj,
+    jint listenPort
+) {
+    return LibretroDroid::getInstance().netpacketStartHost(listenPort) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketStartClient(
+    JNIEnv* env,
+    jclass obj,
+    jstring host,
+    jint port
+) {
+    auto hostStr = JniString(env, host);
+    return LibretroDroid::getInstance().netpacketStartClient(hostStr.stdString(), port)
+        ? JNI_TRUE
+        : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketStop(
+    JNIEnv* env,
+    jclass obj
+) {
+    LibretroDroid::getInstance().netpacketStop();
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketIsActive(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LibretroDroid::getInstance().netpacketIsActive() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_netpacketPeerCount(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LibretroDroid::getInstance().netpacketPeerCount();
+}
+
+// Peer connect/disconnect → Java static callback on LibretroDroid.
+static JavaVM* gNetpacketVm = nullptr;
+static jclass gNetpacketClass = nullptr;
+static jmethodID gNetpacketPeerMethod = nullptr;
+
+static void netpacketPeerEvent(bool joined, uint16_t clientId) {
+    if (gNetpacketVm == nullptr || gNetpacketClass == nullptr || gNetpacketPeerMethod == nullptr) {
+        return;
+    }
+    JNIEnv* env = nullptr;
+    bool detach = false;
+    if (gNetpacketVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (gNetpacketVm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        detach = true;
+    }
+    env->CallStaticVoidMethod(
+        gNetpacketClass,
+        gNetpacketPeerMethod,
+        joined ? JNI_TRUE : JNI_FALSE,
+        static_cast<jint>(clientId)
+    );
+    if (detach) gNetpacketVm->DetachCurrentThread();
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_nativeInitNetpacketPeerBridge(
+    JNIEnv* env,
+    jclass obj
+) {
+    env->GetJavaVM(&gNetpacketVm);
+    jclass cls = env->FindClass("com/swordfish/libretrodroid/LibretroDroid");
+    if (cls == nullptr) return;
+    gNetpacketClass = reinterpret_cast<jclass>(env->NewGlobalRef(cls));
+    gNetpacketPeerMethod =
+        env->GetStaticMethodID(gNetpacketClass, "onNativeNetpacketPeer", "(ZI)V");
+    NetpacketBridge::getInstance().setPeerEventCallback(&netpacketPeerEvent);
 }
 
 }

@@ -17,6 +17,9 @@
 
 #include "es3utils.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "../../log.h"
 
 namespace libretrodroid {
@@ -29,6 +32,11 @@ std::unique_ptr<ES3Utils::Framebuffer> ES3Utils::createFramebuffer(
     bool includeDepth,
     bool includeStencil
 ) {
+    if (width == 0) width = 1;
+    if (height == 0) height = 1;
+    if (width > 4096) width = 4096;
+    if (height > 4096) height = 4096;
+
     auto result = std::make_unique<Framebuffer>();
     result->width = width;
     result->height = height;
@@ -52,24 +60,46 @@ std::unique_ptr<ES3Utils::Framebuffer> ES3Utils::createFramebuffer(
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, result->texture, 0);
 
-    if (includeDepth) {
+    auto attachDepth = [&](GLenum internalFormat, GLenum attachment) {
         glBindRenderbuffer(GL_RENDERBUFFER, result->depth.value());
-        glRenderbufferStorage(
-            GL_RENDERBUFFER,
-            includeStencil ? GL_DEPTH24_STENCIL8 : GL_DEPTH_COMPONENT16,
-            width,
-            height
-        );
-        glFramebufferRenderbuffer(
-            GL_FRAMEBUFFER,
-            includeStencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
-            GL_RENDERBUFFER,
-            result->depth.value()
-        );
+        glRenderbufferStorage(GL_RENDERBUFFER, internalFormat, width, height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, attachment, GL_RENDERBUFFER, result->depth.value());
+    };
+
+    if (includeDepth) {
+        if (includeStencil) {
+            attachDepth(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL_ATTACHMENT);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                LOGE(
+                    "Depth24+stencil FBO incomplete (%ux%u status=0x%x); retrying depth-only",
+                    width,
+                    height,
+                    glCheckFramebufferStatus(GL_FRAMEBUFFER)
+                );
+                attachDepth(GL_DEPTH_COMPONENT24, GL_DEPTH_ATTACHMENT);
+            }
+        } else {
+            attachDepth(GL_DEPTH_COMPONENT24, GL_DEPTH_ATTACHMENT);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                attachDepth(GL_DEPTH_COMPONENT16, GL_DEPTH_ATTACHMENT);
+            }
+        }
     }
 
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        LOGE("Error while creating framebuffer. Leaving!");
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE(
+            "Error while creating framebuffer %ux%u depth=%d stencil=%d status=0x%x glErr=0x%x",
+            width,
+            height,
+            includeDepth ? 1 : 0,
+            includeStencil ? 1 : 0,
+            status,
+            glGetError()
+        );
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
         throw std::runtime_error("Cannot create framebuffer");
     }
 
@@ -103,8 +133,13 @@ std::unique_ptr<ES3Utils::Framebuffers> ES3Utils::buildShaderPasses(
 
     for (int i = 0; i < passes.size() - 1; ++i) {
         auto pass = passes[i];
-        unsigned int passWidth = std::lround(width * pass.scale);
-        unsigned int passHeight = std::lround(height * pass.scale);
+        float scale = pass.scale;
+        float maxSide = std::max(width, height) * scale;
+        if (maxSide > 4096.0F) {
+            scale *= 4096.0F / maxSide;
+        }
+        unsigned int passWidth = std::lround(width * scale);
+        unsigned int passHeight = std::lround(height * scale);
 
         std::unique_ptr<ES3Utils::Framebuffer> data = ES3Utils::createFramebuffer(
             passWidth,

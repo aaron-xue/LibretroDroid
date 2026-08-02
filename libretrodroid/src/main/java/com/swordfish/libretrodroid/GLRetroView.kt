@@ -174,6 +174,12 @@ class GLRetroView(
         }
     }
 
+    fun resetCheat(useEmulationThread: Boolean = true) {
+        runOnEmulationThread(useEmulationThread) {
+            LibretroDroid.resetCheat()
+        }
+    }
+
     fun unserializeState(data: ByteArray, useEmulationThread: Boolean = true): Boolean {
         return runOnEmulationThread(useEmulationThread) {
             LibretroDroid.unserializeState(data)
@@ -214,6 +220,26 @@ class GLRetroView(
 
     fun setControllerType(port: Int, type: Int) {
         LibretroDroid.setControllerType(port, type)
+    }
+
+    fun netpacketHasCore(): Boolean = LibretroDroid.netpacketHasCore()
+
+    fun netpacketStartHost(listenPort: Int): Boolean =
+        LibretroDroid.netpacketStartHost(listenPort)
+
+    fun netpacketStartClient(host: String, port: Int): Boolean =
+        LibretroDroid.netpacketStartClient(host, port)
+
+    fun netpacketStop() {
+        LibretroDroid.netpacketStop()
+    }
+
+    fun netpacketIsActive(): Boolean = LibretroDroid.netpacketIsActive()
+
+    fun netpacketPeerCount(): Int = LibretroDroid.netpacketPeerCount()
+
+    fun setNetpacketPeerListener(listener: LibretroDroid.NetpacketPeerListener?) {
+        LibretroDroid.setNetpacketPeerListener(listener)
     }
 
     fun getVariables(): Array<Variable> {
@@ -318,9 +344,14 @@ class GLRetroView(
     inner class Renderer : GLSurfaceView.Renderer {
         override fun onDrawFrame(gl: GL10) = catchExceptions {
             if (isEmulationReady) {
-                LibretroDroid.step(this@GLRetroView)
-                lifecycle?.coroutineScope?.launch {
-                    retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                val newFrame = LibretroDroid.step(this@GLRetroView)
+                if (RetroAchievements.active) {
+                    RetroAchievements.INSTANCE.nativeDoFrame()
+                }
+                if (newFrame) {
+                    lifecycle?.coroutineScope?.launch {
+                        retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                    }
                 }
             }
         }
@@ -413,6 +444,13 @@ class GLRetroView(
             is ShaderConfig.CRT -> GLRetroShader(LibretroDroid.SHADER_CRT)
             is ShaderConfig.LCD -> GLRetroShader(LibretroDroid.SHADER_LCD)
             is ShaderConfig.Sharp -> GLRetroShader(LibretroDroid.SHADER_SHARP)
+            is ShaderConfig.SGSR -> GLRetroShader(
+                LibretroDroid.SHADER_UPSCALE_SGSR,
+                mapOf(
+                    LibretroDroid.SHADER_UPSCALE_SGSR_PARAM_PREPASSES to config.prePasses.toString(),
+                    LibretroDroid.SHADER_UPSCALE_SGSR_PARAM_BASE to config.base,
+                )
+            )
             is ShaderConfig.CUT -> GLRetroShader(
                 LibretroDroid.SHADER_UPSCALE_CUT,
                 buildParams(

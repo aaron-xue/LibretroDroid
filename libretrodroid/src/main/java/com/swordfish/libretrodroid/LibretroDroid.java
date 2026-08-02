@@ -21,9 +21,31 @@ import java.util.List;
 
 public class LibretroDroid {
 
+    public interface NetpacketPeerListener {
+        void onPeer(boolean joined, int clientId);
+    }
+
+    private static volatile NetpacketPeerListener netpacketPeerListener;
+
     static {
         System.loadLibrary("libretrodroid");
+        nativeInitNetpacketPeerBridge();
     }
+
+    public static void setNetpacketPeerListener(NetpacketPeerListener listener) {
+        netpacketPeerListener = listener;
+    }
+
+    /** Called from native when a netpacket TCP peer joins/leaves (host side). */
+    @SuppressWarnings("unused")
+    public static void onNativeNetpacketPeer(boolean joined, int clientId) {
+        NetpacketPeerListener l = netpacketPeerListener;
+        if (l != null) {
+            l.onPeer(joined, clientId);
+        }
+    }
+
+    private static native void nativeInitNetpacketPeerBridge();
 
     public static final int MOTION_SOURCE_DPAD = 0;
     public static final int MOTION_SOURCE_ANALOG_LEFT = 1;
@@ -37,7 +59,10 @@ public class LibretroDroid {
     public static final int SHADER_UPSCALE_CUT = 4;
     public static final int SHADER_UPSCALE_CUT2 = 5;
     public static final int SHADER_UPSCALE_CUT3 = 6;
+    public static final int SHADER_UPSCALE_SGSR = 7;
 
+    public static final String SHADER_UPSCALE_SGSR_PARAM_PREPASSES = "sgsr_prepasses";
+    public static final String SHADER_UPSCALE_SGSR_PARAM_BASE = "sgsr_base";
     public static final String SHADER_UPSCALE_CUT_PARAM_USE_DYNAMIC_BLEND = "USE_DYNAMIC_BLEND";
     public static final String SHADER_UPSCALE_CUT_PARAM_BLEND_MIN_CONTRAST_EDGE = "BLEND_MIN_CONTRAST_EDGE";
     public static final String SHADER_UPSCALE_CUT_PARAM_BLEND_MAX_CONTRAST_EDGE = "BLEND_MAX_CONTRAST_EDGE";
@@ -105,7 +130,7 @@ public class LibretroDroid {
     public static native void pause();
     public static native void destroy();
 
-    public static native void step(GLRetroView retroView);
+    public static native boolean step(GLRetroView retroView);
 
     public static native void reset();
 
@@ -141,4 +166,12 @@ public class LibretroDroid {
 
     public static native Controller[][] getControllers();
     public static native void setControllerType(int port, int type);
+
+    /** Libretro netpacket multi-device link (gpSP GBA Wireless Adapter, etc.). */
+    public static native boolean netpacketHasCore();
+    public static native boolean netpacketStartHost(int listenPort);
+    public static native boolean netpacketStartClient(String host, int port);
+    public static native void netpacketStop();
+    public static native boolean netpacketIsActive();
+    public static native int netpacketPeerCount();
 }

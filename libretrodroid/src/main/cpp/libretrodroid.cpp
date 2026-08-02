@@ -37,6 +37,7 @@
 #include "shadermanager.h"
 #include "utils/javautils.h"
 #include "environment.h"
+#include "netpacket.h"
 #include "renderers/es3/framebufferrenderer.h"
 #include "renderers/es2/imagerendereres2.h"
 #include "renderers/es3/imagerendereres3.h"
@@ -144,6 +145,33 @@ void LibretroDroid::setControllerType(unsigned int port, unsigned int type) {
     core->retro_set_controller_port_device(port, type);
 }
 
+bool LibretroDroid::netpacketHasCore() {
+    return NetpacketBridge::getInstance().hasCoreInterface();
+}
+
+bool LibretroDroid::netpacketStartHost(int listenPort) {
+    std::lock_guard<std::mutex> lock(coreLock);
+    return NetpacketBridge::getInstance().startHost(listenPort);
+}
+
+bool LibretroDroid::netpacketStartClient(const std::string& host, int port) {
+    std::lock_guard<std::mutex> lock(coreLock);
+    return NetpacketBridge::getInstance().startClient(host, port);
+}
+
+void LibretroDroid::netpacketStop() {
+    std::lock_guard<std::mutex> lock(coreLock);
+    NetpacketBridge::getInstance().stop();
+}
+
+bool LibretroDroid::netpacketIsActive() {
+    return NetpacketBridge::getInstance().isActive();
+}
+
+int LibretroDroid::netpacketPeerCount() {
+    return NetpacketBridge::getInstance().peerCount();
+}
+
 bool LibretroDroid::unserializeState(int8_t *data, size_t size) {
     std::lock_guard<std::mutex> lock(coreLock);
 
@@ -171,6 +199,23 @@ JNIEXPORT jboolean JNICALL LibretroDroid::unserializeSRAM(int8_t* data, size_t s
     return true;
 }
 
+size_t LibretroDroid::coreMemorySize(unsigned id) {
+    if (!core) return 0;
+    return core->retro_get_memory_size(id);
+}
+
+void* LibretroDroid::coreMemoryData(unsigned id) {
+    if (!core) return nullptr;
+    return core->retro_get_memory_data(id);
+}
+
+std::string LibretroDroid::coreLibraryName() {
+    if (!core) return std::string();
+    struct retro_system_info info {};
+    core->retro_get_system_info(&info);
+    return info.library_name != nullptr ? std::string(info.library_name) : std::string();
+}
+
 std::pair<int8_t*, size_t> LibretroDroid::serializeSRAM() {
     std::lock_guard<std::mutex> lock(coreLock);
 
@@ -194,10 +239,31 @@ void LibretroDroid::onSurfaceCreated() {
 
     video = nullptr;
 
-    Video::RenderingOptions renderingOptions {
-        Environment::getInstance().isUseHwAcceleration(),
+    unsigned fbWidth = system_av_info.geometry.base_width;
+    unsigned fbHeight = system_av_info.geometry.base_height;
+    if (fbWidth == 0) fbWidth = system_av_info.geometry.max_width;
+    if (fbHeight == 0) fbHeight = system_av_info.geometry.max_height;
+    if (fbWidth == 0) fbWidth = 640;
+    if (fbHeight == 0) fbHeight = 528;
+    if (fbWidth > 4096) fbWidth = 4096;
+    if (fbHeight > 4096) fbHeight = 4096;
+    LOGI(
+        "Video init geometry base=%ux%u max=%ux%u using=%ux%u hw=%d depth=%d stencil=%d",
         system_av_info.geometry.base_width,
         system_av_info.geometry.base_height,
+        system_av_info.geometry.max_width,
+        system_av_info.geometry.max_height,
+        fbWidth,
+        fbHeight,
+        Environment::getInstance().isUseHwAcceleration() ? 1 : 0,
+        Environment::getInstance().isUseDepth() ? 1 : 0,
+        Environment::getInstance().isUseStencil() ? 1 : 0
+    );
+
+    Video::RenderingOptions renderingOptions {
+        Environment::getInstance().isUseHwAcceleration(),
+        fbWidth,
+        fbHeight,
         Environment::getInstance().isUseDepth(),
         Environment::getInstance().isUseStencil(),
         openglESVersion,
@@ -409,12 +475,17 @@ void LibretroDroid::destroy() {
 
     LOGD("Performing libretrodroid destroy");
 
+    NetpacketBridge::getInstance().stop();
+    NetpacketBridge::getInstance().clearCoreInterface();
+
     if (Environment::getInstance().getHwContextDestroy() != nullptr) {
         Environment::getInstance().getHwContextDestroy()();
     }
 
-    core->retro_unload_game();
-    core->retro_deinit();
+    if (core) {
+        core->retro_unload_game();
+        core->retro_deinit();
+    }
 
     video = nullptr;
     core = nullptr;
@@ -443,7 +514,7 @@ void LibretroDroid::pause() {
     input = nullptr;
 }
 
-void LibretroDroid::step() {
+bool LibretroDroid::step() {
     std::lock_guard<std::mutex> lock(coreLock);
 
     LOGD("Stepping into retro_run()");
@@ -456,10 +527,15 @@ void LibretroDroid::step() {
         frames = std::min(requestedFrames, 2u);
     }
 
-    for (size_t i = 0; i < frames * frameSpeed; i++)
-        core->retro_run();
+    bool ranNewFrame = frames * frameSpeed > 0;
 
-    if (video && !video->rendersInVideoCallback()) {
+    for (size_t i = 0; i < frames * frameSpeed; i++) {
+        // Deliver netpacket traffic before each emulated frame (gpSP RFU).
+        NetpacketBridge::getInstance().poll();
+        core->retro_run();
+    }
+
+    if (video) {
         video->renderFrame();
     }
 
@@ -471,16 +547,14 @@ void LibretroDroid::step() {
         rumble->fetchFromEnvironment();
     }
 
-    // Some games override the core geometry at runtime. These fields get updated in retro_run().
     if (video && Environment::getInstance().isGameGeometryUpdated()) {
         Environment::getInstance().clearGameGeometryUpdated();
-
-        video->updateRendererSize(
-            Environment::getInstance().getGameGeometryWidth(),
-            Environment::getInstance().getGameGeometryHeight()
-        );
-
-        dirtyVideo = true;
+        unsigned nextW = Environment::getInstance().getGameGeometryWidth();
+        unsigned nextH = Environment::getInstance().getGameGeometryHeight();
+        if (nextW > 0 && nextH > 0) {
+            video->updateRendererSize(nextW, nextH);
+            dirtyVideo = true;
+        }
     }
 
     if (video && Environment::getInstance().isScreenRotationUpdated()) {
@@ -488,6 +562,8 @@ void LibretroDroid::step() {
 
         video->updateRotation(Environment::getInstance().getScreenRotation());
     }
+
+    return ranNewFrame;
 }
 
 float LibretroDroid::getAspectRatio() {

@@ -51,6 +51,7 @@ public:
         SHADER_UPSCALE_CUT = 4,
         SHADER_UPSCALE_CUT2 = 5,
         SHADER_UPSCALE_CUT3 = 6,
+        SHADER_UPSCALE_SGSR = 7,
     };
 
     struct Config {
@@ -87,6 +88,9 @@ private:
     static const std::string cut3UpscalePass1Fragment;
     static const std::string cut3UpscalePass2Vertex;
     static const std::string cut3UpscalePass2Fragment;
+
+    static const std::string sgsrUpscaleVertex;
+    static const std::string sgsrUpscaleFragmentBody;
 
 private:
     static std::string buildDefines(
