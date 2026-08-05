@@ -51,9 +51,25 @@ jobs:
           git fetch --no-tags upstream "$branch"
           before=$(git rev-parse HEAD)
           if ! git merge --no-edit "upstream/$branch"; then
-            git merge --abort || git reset --hard "$before"
-            echo "::warning::Upstream merge conflicts; $SYNC_BRANCH left untouched. Resolve by hand, then re-run."
-            exit 0
+            conflicts=$(git diff --name-only --diff-filter=U)
+            outside=$(echo "$conflicts" | grep -vE '^\.github/workflows/' || true)
+            if [ -n "$outside" ]; then
+              git merge --abort || git reset --hard "$before"
+              echo "::warning::Upstream merge conflicts; $SYNC_BRANCH left untouched. Resolve by hand, then re-run."
+              echo "$outside" | sed 's/^/::warning::  /'
+              :
+              exit 0
+            fi
+            for f in $conflicts; do
+              if git cat-file -e "$before:$f" 2>/dev/null; then
+                git checkout "$before" -- "$f"
+                git add -- "$f"
+              else
+                git rm -q -f -- "$f" >/dev/null 2>&1 || git rm -q -f --cached -- "$f"
+              fi
+            done
+            git commit --no-edit
+            echo "Kept this fork's workflow files where upstream's conflicted."
           fi
           after=$(git rev-parse HEAD)
           if [ "$before" = "$after" ]; then
