@@ -1,0 +1,172 @@
+name: core
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 21 * * *"
+  push:
+    branches: [winnative]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  GH_REPO: ${{ github.repository }}
+  SYNC_BRANCH: winnative
+  NDK_VERSION: 27.3.13750724
+  CMAKE_VERSION: 3.22.1
+  ARTIFACT: libretrodroid.aar
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: winnative
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Sync upstream
+        id: sync
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          parent=$(gh repo view "$GITHUB_REPOSITORY" --json parent --jq 'if .parent then .parent.owner.login + "/" + .parent.name else "" end')
+          if [ -z "$parent" ]; then
+            echo "No upstream parent; building the branch as-is."
+            exit 0
+          fi
+          branch=$(gh repo view "$parent" --json defaultBranchRef --jq .defaultBranchRef.name)
+          echo "upstream $parent@$branch"
+          git config user.name "winnative-ci"
+          git config user.email "ci@winnative.dev"
+          git remote add upstream "https://github.com/$parent.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/$parent.git"
+          git fetch --no-tags upstream "$branch"
+          before=$(git rev-parse HEAD)
+          if ! git merge --no-edit "upstream/$branch"; then
+            git merge --abort || git reset --hard "$before"
+            echo "::warning::Upstream merge conflicts; $SYNC_BRANCH left untouched. Resolve by hand, then re-run."
+            exit 0
+          fi
+          after=$(git rev-parse HEAD)
+          if [ "$before" = "$after" ]; then
+            echo "Already up to date with upstream."
+            exit 0
+          fi
+          git submodule update --init --recursive || echo "::warning::submodule update incomplete"
+          rm -rf .github/workflows
+          git checkout "$before" -- .github/workflows 2>/dev/null || true
+          git add -A .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+            echo "Dropped upstream's workflow files from the merge; a GitHub token may not push them."
+          fi
+          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse ${before}^{tree})" ]; then
+            git reset --hard "$before"
+            echo "Upstream touched only workflow files; nothing to merge."
+            exit 0
+          fi
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+          echo "Merged $(git rev-list --count $before..HEAD) upstream commit(s); the push waits until the build passes."
+
+      - name: Has the source changed since the last release?
+        id: src
+        run: |
+          src=$(git log -1 --format=%H -- . ':(exclude).github')
+          prev=$(curl -sfL "https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/source.sha" | tr -d '[:space:]' || true)
+          echo "source    $src"
+          echo "published ${prev:-<none>}"
+          echo "$src" > source.sha
+          if [ "$src" = "$prev" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "This source has already been built and released; nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.src.outputs.changed == 'true'
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install NDK and CMake
+        if: steps.src.outputs.changed == 'true'
+        run: |
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}" > /dev/null
+
+      - name: Build
+        if: steps.src.outputs.changed == 'true'
+        run: ./gradlew :libretrodroid:assembleRelease --no-daemon
+
+      - name: Collect
+        if: steps.src.outputs.changed == 'true'
+        run: |
+          aar=libretrodroid/build/outputs/aar/libretrodroid-release.aar
+          if [ ! -f "$aar" ]; then
+            echo "no AAR produced" >&2
+            exit 1
+          fi
+          if ! unzip -l "$aar" | grep -q 'jni/arm64-v8a/liblibretrodroid.so'; then
+            echo "AAR contains no arm64-v8a native library" >&2
+            exit 1
+          fi
+          mkdir -p dist extracted
+          unzip -o -q "$aar" -d extracted
+          align=$(readelf -lW extracted/jni/arm64-v8a/liblibretrodroid.so | awk '/LOAD/ {print $NF}' | sort -u)
+          echo "LOAD alignment: $align"
+          if [ "$align" != "0x4000" ]; then
+            echo "native library is not 16k-page aligned" >&2
+            exit 1
+          fi
+          cp "$aar" "dist/${ARTIFACT}"
+          ( cd dist && sha256sum "${ARTIFACT}" | cut -d' ' -f1 > "${ARTIFACT}.sha256" )
+          cp source.sha dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        if: steps.src.outputs.changed == 'true'
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Push the synced branch
+        if: steps.sync.outputs.merged == 'true'
+        run: |
+          if git push origin "HEAD:$SYNC_BRANCH"; then
+            echo "Pushed the upstream merge to $SYNC_BRANCH."
+            exit 0
+          fi
+          git fetch --no-tags origin "$SYNC_BRANCH"
+          if git merge --no-edit "origin/$SYNC_BRANCH" && git push origin "HEAD:$SYNC_BRANCH"; then
+            echo "Re-merged a concurrent update to $SYNC_BRANCH and pushed."
+            exit 0
+          fi
+          echo "::error::Could not push the upstream merge to $SYNC_BRANCH. The build passed, so nothing is broken, but the merge was not kept."
+          exit 1
+
+      - name: Publish release
+        if: steps.src.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}"
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --notes "arm64-v8a AAR from ${GITHUB_SHA}"
+          fi
+          gh release upload "$tag" dist/* --clobber
+          if ! gh release view latest > /dev/null 2>&1; then
+            gh release create latest --title latest --notes "Rolling build."
+          fi
+          gh release upload latest dist/* --clobber
+          gh release edit latest --notes "Rolling; newest immutable tag: $tag"
+          echo "$tag"
