@@ -437,7 +437,6 @@ class GLRetroView(
                 isEmulationReady = true
                 isVulkanMode.set(true)
                 startVulkanRenderLoop()
-                Handler(Looper.getMainLooper()).post { onPause() }
             }
         }
     }
@@ -558,7 +557,7 @@ class GLRetroView(
             return block()
         }
 
-        if (isVulkanMode.get() || vulkanThread?.isAlive == true) {
+        if (isVulkanMode.get() || vulkanThread?.isAlive == true || !isEmulationReady) {
             return block()
         }
 
