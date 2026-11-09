@@ -367,6 +367,13 @@ class GLRetroView(
         private fun resume() = catchExceptions {
             LibretroDroid.resume()
             onResume()
+            if (isVulkanMode.get() && (vulkanThread == null || !vulkanThread!!.isAlive)) {
+                val surface = holder.surface
+                if (surface != null && LibretroDroid.isVulkanActive()) {
+                    LibretroDroid.onVulkanSurfaceCreated(surface)
+                }
+                startVulkanRenderLoop()
+            }
             isEmulationReady = true
         }
 
@@ -424,6 +431,7 @@ class GLRetroView(
                 if (surface != null) {
                     LibretroDroid.onVulkanSurfaceCreated(surface)
                 }
+                isEmulationReady = true
                 isVulkanMode.set(true)
                 startVulkanRenderLoop()
                 Handler(Looper.getMainLooper()).post { onPause() }
@@ -464,7 +472,7 @@ class GLRetroView(
         vulkanThread = Thread({
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             try {
-                while (isEmulationReady && isVulkanMode.get() && !isAborted) {
+                while (isVulkanMode.get() && !isAborted) {
                     val newFrame = LibretroDroid.step(view)
                     if (RetroAchievements.active) {
                         RetroAchievements.INSTANCE.nativeDoFrame()
@@ -547,6 +555,10 @@ class GLRetroView(
         if (!useEmulationThread || Thread.currentThread().name.startsWith("GLThread")
             || Thread.currentThread().name == "VulkanRenderThread"
         ) {
+            return block()
+        }
+
+        if (isVulkanMode.get()) {
             return block()
         }
 
