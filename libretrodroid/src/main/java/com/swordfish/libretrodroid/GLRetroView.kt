@@ -381,10 +381,10 @@ class GLRetroView(
         private fun pause() = catchExceptions {
             isEmulationReady = false
             if (isVulkanMode.get()) {
-                stopVulkanRenderLoop()
                 if (LibretroDroid.isVulkanActive()) {
                     LibretroDroid.onVulkanSurfaceDestroyed()
                 }
+                stopVulkanRenderLoop()
             } else {
                 onPause()
                 if (LibretroDroid.isVulkanActive()) {
@@ -423,21 +423,19 @@ class GLRetroView(
 
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
+            // Release EGL surface immediately to free ANativeWindow for potential Vulkan use.
+            // Must be done BEFORE initializeCore() so hw_context_reset() has access to the surface.
+            releaseEGLSurface()
+            val surface = holder.surface
+            if (surface != null) {
+                LibretroDroid.onVulkanSurfaceCreated(surface)
+            }
             initializeCore()
             if (LibretroDroid.isVulkanActive()) {
-                // Release EGL surface from ANativeWindow so Vulkan can claim it
-                releaseEGLSurface()
-                val surface = holder.surface
-                if (surface != null) {
-                    LibretroDroid.onVulkanSurfaceCreated(surface)
-                }
                 isEmulationReady = true
                 isVulkanMode.set(true)
                 startVulkanRenderLoop()
                 Handler(Looper.getMainLooper()).post { onPause() }
-            }
-            lifecycle?.coroutineScope?.launch {
-                retroGLEventsSubject.emit(GLRetroEvents.SurfaceCreated)
             }
         }
     }
@@ -558,7 +556,7 @@ class GLRetroView(
             return block()
         }
 
-        if (isVulkanMode.get()) {
+        if (isVulkanMode.get() || vulkanThread?.isAlive == true) {
             return block()
         }
 
