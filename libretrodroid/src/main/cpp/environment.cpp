@@ -193,12 +193,6 @@ bool Environment::environment_handle_get_microphone_interface(struct retro_micro
 
 bool Environment::handle_callback_environment(unsigned cmd, void *data) {
     switch (cmd) {
-        case RETRO_ENVIRONMENT_SET_ROTATION:
-            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION: %i", *(unsigned*) data);
-            screenRotation = (float) (*(unsigned*) data);
-            screenRotationUpdated = true;
-            return true;
-
         case RETRO_ENVIRONMENT_GET_OVERSCAN: {
             LOGD("Called RETRO_ENVIRONMENT_GET_OVERSCAN");
             *((bool*) data) = false;
@@ -220,28 +214,9 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             LOGD("Called RETRO_ENVIRONMENT_SET_CONTROLLER_INFO");
             return environment_handle_set_controller_info(static_cast<const struct retro_controller_info*>(data));
 
-        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
-            LOGD("Called RETRO_ENVIRONMENT_SET_MEMORY_MAPS");
-            return true;
-
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
             LOGD("Called RETRO_ENVIRONMENT_SET_PIXEL_FORMAT");
             pixelFormat = (*(unsigned*) data);
-            return true;
-
-        case RETRO_ENVIRONMENT_SET_SYSTEM_DIRECTORY:
-            LOGD("Called RETRO_ENVIRONMENT_SET_SYSTEM_DIRECTORY");
-            ((struct retro_system_directory*) data)->path = Utils::cloneToCString(systemDirectory);
-            return true;
-
-        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
-            LOGD("Called RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY");
-            ((struct retro_system_directory*) data)->path = Utils::cloneToCString(savesDirectory);
-            return true;
-
-        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
-            LOGD("Called RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE");
-            retro_disk_control_callback = (struct retro_disk_control_callback*) data;
             return true;
 
         case RETRO_ENVIRONMENT_GET_LANGUAGE:
