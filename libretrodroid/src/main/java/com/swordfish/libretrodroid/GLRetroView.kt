@@ -21,6 +21,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.graphics.PointF
 import android.graphics.RectF
+import android.opengl.EGL14
 import android.opengl.GLSurfaceView
 import android.util.Log
 import android.view.InputDevice
@@ -41,6 +42,9 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import android.os.Handler
+import android.os.Looper
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.properties.Delegates
@@ -85,6 +89,9 @@ class GLRetroView(
 
     private var lifecycle: Lifecycle? = null
 
+    private val isVulkanMode = AtomicBoolean(false)
+    private var vulkanThread: Thread? = null
+
     init {
         openGLESVersion = getGLESVersion(context)
         preserveEGLContextOnPause = true
@@ -123,6 +130,11 @@ class GLRetroView(
     }
 
     private fun releaseGraphicsContext() {
+        if (isVulkanMode.get()) {
+            stopVulkanRenderLoop()
+            catchExceptions { LibretroDroid.destroyGraphicsContext() }
+            return
+        }
         if (Thread.currentThread().name.startsWith("GLThread")) {
             catchExceptions { LibretroDroid.destroyGraphicsContext() }
             return
@@ -144,11 +156,19 @@ class GLRetroView(
     }
 
     fun sendKeyEvent(action: Int, keyCode: Int, port: Int = 0) {
-        queueEvent { LibretroDroid.onKeyEvent(port, action, keyCode) }
+        if (isVulkanMode.get()) {
+            LibretroDroid.onKeyEvent(port, action, keyCode)
+        } else {
+            queueEvent { LibretroDroid.onKeyEvent(port, action, keyCode) }
+        }
     }
 
     fun sendMotionEvent(source: Int, xAxis: Float, yAxis: Float, port: Int = 0) {
-        queueEvent { LibretroDroid.onMotionEvent(port, source, xAxis, yAxis) }
+        if (isVulkanMode.get()) {
+            LibretroDroid.onMotionEvent(port, source, xAxis, yAxis)
+        } else {
+            queueEvent { LibretroDroid.onMotionEvent(port, source, xAxis, yAxis) }
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -353,9 +373,16 @@ class GLRetroView(
         @OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         private fun pause() = catchExceptions {
             isEmulationReady = false
-            onPause()
-            if (LibretroDroid.isVulkanActive()) {
-                LibretroDroid.onVulkanSurfaceDestroyed()
+            if (isVulkanMode.get()) {
+                stopVulkanRenderLoop()
+                if (LibretroDroid.isVulkanActive()) {
+                    LibretroDroid.onVulkanSurfaceDestroyed()
+                }
+            } else {
+                onPause()
+                if (LibretroDroid.isVulkanActive()) {
+                    LibretroDroid.onVulkanSurfaceDestroyed()
+                }
             }
             LibretroDroid.pause()
         }
@@ -363,6 +390,10 @@ class GLRetroView(
 
     inner class Renderer : GLSurfaceView.Renderer {
         override fun onDrawFrame(gl: GL10) = catchExceptions {
+            if (isVulkanMode.get()) {
+                Thread.sleep(16)
+                return@catchExceptions
+            }
             if (isEmulationReady) {
                 val newFrame = LibretroDroid.step(this@GLRetroView)
                 if (RetroAchievements.active) {
@@ -378,20 +409,87 @@ class GLRetroView(
 
         override fun onSurfaceChanged(gl: GL10, width: Int, height: Int) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
-            LibretroDroid.onSurfaceChanged(width, height)
+            if (!isVulkanMode.get()) {
+                LibretroDroid.onSurfaceChanged(width, height)
+            }
         }
-
 
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
             initializeCore()
             if (LibretroDroid.isVulkanActive()) {
-                LibretroDroid.onVulkanSurfaceCreated(holder.surface)
+                // Release EGL surface from ANativeWindow so Vulkan can claim it
+                releaseEGLSurface()
+                val surface = holder.surface
+                if (surface != null) {
+                    LibretroDroid.onVulkanSurfaceCreated(surface)
+                }
+                isVulkanMode.set(true)
+                startVulkanRenderLoop()
+                Handler(Looper.getMainLooper()).post { onPause() }
             }
             lifecycle?.coroutineScope?.launch {
                 retroGLEventsSubject.emit(GLRetroEvents.SurfaceCreated)
             }
         }
+    }
+
+    private fun releaseEGLSurface() {
+        val display = EGL14.eglGetCurrentDisplay()
+        if (display == EGL14.EGL_NO_DISPLAY) return
+
+        val drawSurface = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
+        val readSurface = EGL14.eglGetCurrentSurface(EGL14.EGL_READ)
+
+        // Unbind EGL from all surfaces before destroying them
+        EGL14.eglMakeCurrent(
+            display,
+            EGL14.EGL_NO_SURFACE,
+            EGL14.EGL_NO_SURFACE,
+            EGL14.EGL_NO_CONTEXT
+        )
+
+        // Destroy draw surface to release ANativeWindow for Vulkan
+        if (drawSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(display, drawSurface)
+        }
+        // Destroy read surface if different from draw surface
+        if (readSurface != EGL14.EGL_NO_SURFACE && readSurface != drawSurface) {
+            EGL14.eglDestroySurface(display, readSurface)
+        }
+    }
+
+    private fun startVulkanRenderLoop() {
+        val view = this@GLRetroView
+        vulkanThread = Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            try {
+                while (isEmulationReady && isVulkanMode.get() && !isAborted) {
+                    val newFrame = LibretroDroid.step(view)
+                    if (RetroAchievements.active) {
+                        RetroAchievements.INSTANCE.nativeDoFrame()
+                    }
+                    if (newFrame) {
+                        lifecycle?.coroutineScope?.launch {
+                            retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG_LOG, "Error in Vulkan render thread", e)
+            }
+        }, "VulkanRenderThread").apply { start() }
+    }
+
+    private fun stopVulkanRenderLoop() {
+        isVulkanMode.set(false)
+        vulkanThread?.let { thread ->
+            thread.join(2000)
+            if (thread.isAlive) {
+                Log.w(TAG_LOG, "Vulkan render thread did not stop in time")
+            }
+        }
+        vulkanThread = null
     }
 
     // These functions are called from the GL thread.
@@ -446,7 +544,9 @@ class GLRetroView(
     }
 
     private fun <T> runOnEmulationThread(useEmulationThread: Boolean, block: () -> T): T {
-        if (!useEmulationThread || Thread.currentThread().name.startsWith("GLThread")) {
+        if (!useEmulationThread || Thread.currentThread().name.startsWith("GLThread")
+            || Thread.currentThread().name == "VulkanRenderThread"
+        ) {
             return block()
         }
 

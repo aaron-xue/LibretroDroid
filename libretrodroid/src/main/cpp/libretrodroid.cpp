@@ -608,7 +608,9 @@ for (size_t i = 0; i < frames * frameSpeed; i++) {
         core->retro_run();
     }
 
-    if (video) {
+    if (Environment::getInstance().isUseVulkan() && vulkanContext) {
+        vulkanContext->handleVideoRefresh();
+    } else if (video) {
         video->renderFrame();
     }
 
@@ -795,11 +797,7 @@ void LibretroDroid::initializeVulkanIfNeeded() {
     }
     LOGD("Vulkan context initialized successfully");
 
-    auto hwContextReset = Environment::getInstance().getHwContextReset();
-    if (hwContextReset) {
-        LOGD("Calling hw_context_reset for Vulkan");
-        hwContextReset();
-    }
+
 }
 
 float LibretroDroid::findDefaultAspectRatio(const retro_system_av_info& system_av_info) {
