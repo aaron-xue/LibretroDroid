@@ -31,6 +31,15 @@ int16_t Input::getInputState(unsigned port, unsigned device, unsigned index, uns
 
     switch (device) {
         case RETRO_DEVICE_JOYPAD: {
+            if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+                int16_t mask = 0;
+                for (int i = 0; i < 16; i++) {
+                    if (getInputState(port, RETRO_DEVICE_JOYPAD, 0, i)) {
+                        mask |= (1 << i);
+                    }
+                }
+                return mask;
+            }
             switch (id) {
                 case RETRO_DEVICE_ID_JOYPAD_LEFT: {
                     bool axis = pads[port].dpadXAxis == -1;
@@ -97,6 +106,11 @@ int16_t Input::getInputState(unsigned port, unsigned device, unsigned index, uns
                         default:
                             return 0;
                     }
+                case RETRO_DEVICE_INDEX_ANALOG_BUTTON:
+                    if (anyPressed(port, id)) {
+                        return MAX_RANGE_MOTION;
+                    }
+                    return 0;
                 default:
                     return 0;
             }

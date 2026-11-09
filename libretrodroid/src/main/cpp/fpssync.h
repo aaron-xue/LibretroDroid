@@ -40,6 +40,8 @@ private:
     double screenRefreshRate;
     double contentRefreshRate;
     bool useVSync;
+    unsigned vsyncMultiple = 1;
+    unsigned tickCounter = 0;
     const double FPS_TOLERANCE = 5;
 
     const TimePoint MIN_TIME = TimePoint::min();

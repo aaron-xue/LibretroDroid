@@ -44,27 +44,89 @@ void FramebufferRenderer::onNewFrame(const void *data, unsigned width, unsigned 
         initializeBuffers();
         isDirty = false;
     }
+
+    GLboolean scissorWasEnabled = glIsEnabled(GL_SCISSOR_TEST);
+    if (scissorWasEnabled) glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer->framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, presentBuffer->framebuffer);
+    glBlitFramebuffer(
+        0,
+        0,
+        this->width,
+        this->height,
+        0,
+        0,
+        this->width,
+        this->height,
+        GL_COLOR_BUFFER_BIT,
+        GL_NEAREST
+    );
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (scissorWasEnabled) glEnable(GL_SCISSOR_TEST);
 }
 
 void FramebufferRenderer::initializeBuffers() {
     framebuffers = ES3Utils::buildShaderPasses(width, height, shaders);
 
-    ES3Utils::deleteFramebuffer(std::move(framebuffer));
-    framebuffer = ES3Utils::createFramebuffer(
-        width,
-        height,
-        shaders.linearTexture,
-        false,
-        depth,
-        stencil
-    );
+    bool needsMainFramebuffer =
+        framebuffer->framebuffer == 0 ||
+        framebuffer->width != width ||
+        framebuffer->height != height;
+
+    if (needsMainFramebuffer) {
+        ES3Utils::deleteFramebuffer(std::move(framebuffer));
+        framebuffer = ES3Utils::createFramebuffer(
+            width,
+            height,
+            shaders.linearTexture,
+            false,
+            depth,
+            stencil
+        );
+    } else {
+        GLint filter = shaders.linearTexture ? GL_LINEAR : GL_NEAREST;
+        glBindTexture(GL_TEXTURE_2D, framebuffer->texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    bool needsPresentBuffer =
+        presentBuffer->framebuffer == 0 ||
+        presentBuffer->width != width ||
+        presentBuffer->height != height;
+
+    if (needsPresentBuffer) {
+        ES3Utils::deleteFramebuffer(std::move(presentBuffer));
+        presentBuffer = ES3Utils::createFramebuffer(
+            width,
+            height,
+            shaders.linearTexture,
+            false,
+            false,
+            false
+        );
+    } else {
+        GLint filter = shaders.linearTexture ? GL_LINEAR : GL_NEAREST;
+        glBindTexture(GL_TEXTURE_2D, presentBuffer->texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 uintptr_t FramebufferRenderer::getTexture() {
-    return framebuffer->texture;
+    return presentBuffer->texture;
 }
 
 uintptr_t FramebufferRenderer::getFramebuffer() {
+    if (isDirty) {
+        initializeBuffers();
+        isDirty = false;
+    }
+    if (!framebuffer || framebuffer->framebuffer == 0) {
+        return 0;
+    }
     return framebuffer->framebuffer;
 }
 
@@ -73,10 +135,18 @@ void FramebufferRenderer::setPixelFormat(int pixelFormat) {
 }
 
 void FramebufferRenderer::updateRenderedResolution(unsigned int width, unsigned int height) {
+    if (width == 0 || height == 0) {
+        LOGI("FramebufferRenderer ignoring 0x0 resolution (keeping %dx%d)", this->width, this->height);
+        return;
+    }
+    if (width > 4096) width = 4096;
+    if (height > 4096) height = 4096;
     if (this->width != width || this->height != height) {
+        LOGI("FramebufferRenderer resolution change: %dx%d -> %dx%d", this->width, this->height, width, height);
         this->width = width;
         this->height = height;
-        isDirty = true;
+        initializeBuffers();
+        isDirty = false;
     }
 }
 

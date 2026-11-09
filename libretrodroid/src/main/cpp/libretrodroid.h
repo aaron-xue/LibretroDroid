@@ -74,6 +74,10 @@ public:
     std::pair<int8_t *, size_t> serializeSRAM();
     jboolean unserializeSRAM(int8_t *data, size_t size);
 
+    size_t coreMemorySize(unsigned id);
+    void* coreMemoryData(unsigned id);
+    std::string coreLibraryName();
+
     void onSurfaceCreated();
     void onSurfaceChanged(unsigned int width, unsigned int height);
     void onVulkanSurfaceCreated(JNIEnv* env, jobject surface);
@@ -95,9 +99,11 @@ public:
         const std::string& language
     );
     void resume();
-    void step();
+    bool step();
     void pause();
     void destroy();
+
+    void destroyGraphicsContext();
 
     void reset();
     void loadGameFromPath(const std::string &gamePath);
@@ -119,6 +125,14 @@ public:
 
     std::vector<std::vector<struct Controller>> getControllers();
     void setControllerType(unsigned int port, unsigned int type);
+
+    /** Libretro netpacket (gpSP RFU / multi-device link). */
+    bool netpacketHasCore();
+    bool netpacketStartHost(int listenPort);
+    bool netpacketStartClient(const std::string& host, int port);
+    void netpacketStop();
+    bool netpacketIsActive();
+    int netpacketPeerCount();
 
     int availableDisks();
     int currentDisk();

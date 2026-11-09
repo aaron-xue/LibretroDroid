@@ -25,12 +25,13 @@
 #include <EGL/egl.h>
 #include <unordered_map>
 
-#include "../../libretro-common/include/libretro.h"
+#include "retro_netpacket_api.h"
 #include "log.h"
 #include "environment.h"
 #include "vfs/vfs.h"
 #include "microphone/microphoneinterface.h"
 #include "vulkancommon/libretro_vulkan.h"
+#include "netpacket.h"
 
 void Environment::initialize(
     const std::string &requiredSystemDirectory,
@@ -48,6 +49,11 @@ void Environment::deinitialize() {
     hw_context_destroy = nullptr;
 
     retro_disk_control_callback = nullptr;
+
+    memoryDescriptors.clear();
+    memoryMap = {};
+    hasMemoryMap = false;
+
     savesDirectory = std::string();
     systemDirectory = std::string();
     language = RETRO_LANGUAGE_ENGLISH;
@@ -290,6 +296,45 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             ((struct retro_log_callback*) data)->log = &callback_retro_log;
             return true;
 
+        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+            LOGD("Called RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY");
+            *(const char**) data = savesDirectory.c_str();
+            return !savesDirectory.empty();
+
+        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+            LOGD("Called RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY");
+            *(const char**) data = systemDirectory.c_str();
+            return !systemDirectory.empty();
+
+        case RETRO_ENVIRONMENT_SET_ROTATION: {
+            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION");
+            unsigned screenRotationIndex = (*static_cast<unsigned*>(data));
+            screenRotation = screenRotationIndex * (float) (-M_PI / 2.0);
+            screenRotationUpdated = true;
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: {
+            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION");
+            retro_disk_control_callback = static_cast<struct retro_disk_control_callback*>(data);
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_PERF_INTERFACE:
+            LOGD("Called RETRO_ENVIRONMENT_GET_PERF_INTERFACE");
+            return false;
+
+        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS: {
+            auto *received = static_cast<const struct retro_memory_map *>(data);
+            memoryDescriptors.assign(received->descriptors, received->descriptors + received->num_descriptors);
+            memoryMap.descriptors = memoryDescriptors.data();
+            memoryMap.num_descriptors = static_cast<unsigned>(memoryDescriptors.size());
+            hasMemoryMap = !memoryDescriptors.empty();
+            return true;
+        }
+
+            // TODO... RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO can also change frame-rate
+        case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
         case RETRO_ENVIRONMENT_SET_GEOMETRY: {
             LOGD("Called RETRO_ENVIRONMENT_SET_GEOMETRY");
             auto* geo = (struct retro_game_geometry*) data;
@@ -310,6 +355,13 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             LOGD("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");
             return environment_handle_get_microphone_interface((struct retro_microphone_interface*) data);
 
+        case RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE:
+            LOGI("Called RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE");
+            libretrodroid::NetpacketBridge::getInstance().setCoreInterface(
+                static_cast<const wn_netpacket_callback*>(data)
+            );
+            return true;
+
         default:
             LOGD("Unhandled environ %d", cmd);
             return false;
@@ -324,8 +376,16 @@ retro_hw_context_reset_t Environment::getHwContextDestroy() const {
     return hw_context_destroy;
 }
 
+void Environment::clearHwContextDestroy() {
+    hw_context_destroy = nullptr;
+}
+
 struct retro_disk_control_callback* Environment::getRetroDiskControlCallback() const {
     return retro_disk_control_callback;
+}
+
+const struct retro_memory_map* Environment::getMemoryMap() const {
+    return hasMemoryMap ? &memoryMap : nullptr;
 }
 
 int Environment::getPixelFormat() const {

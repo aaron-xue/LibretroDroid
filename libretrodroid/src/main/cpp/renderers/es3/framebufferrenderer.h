@@ -56,6 +56,7 @@ private:
     bool isDirty = false;
 
     std::unique_ptr<ES3Utils::Framebuffer> framebuffer = std::make_unique<ES3Utils::Framebuffer>();
+    std::unique_ptr<ES3Utils::Framebuffer> presentBuffer = std::make_unique<ES3Utils::Framebuffer>();
 
     ShaderManager::Chain shaders;
     std::unique_ptr<ES3Utils::Framebuffers> framebuffers = std::make_unique<ES3Utils::Framebuffers>();

@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.properties.Delegates
@@ -116,8 +117,24 @@ class GLRetroView(
 
     @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     fun onDestroy() = catchExceptions {
+        releaseGraphicsContext()
         LibretroDroid.destroy()
         lifecycle = null
+    }
+
+    private fun releaseGraphicsContext() {
+        if (Thread.currentThread().name.startsWith("GLThread")) {
+            catchExceptions { LibretroDroid.destroyGraphicsContext() }
+            return
+        }
+        val latch = CountDownLatch(1)
+        queueEvent {
+            catchExceptions { LibretroDroid.destroyGraphicsContext() }
+            latch.countDown()
+        }
+        if (!latch.await(GRAPHICS_TEARDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG_LOG, "Graphics context teardown timed out; the GL thread is already gone")
+        }
     }
 
     private fun getDeviceLanguage() = Locale.getDefault().language
@@ -174,6 +191,12 @@ class GLRetroView(
         }
     }
 
+    fun resetCheat(useEmulationThread: Boolean = true) {
+        runOnEmulationThread(useEmulationThread) {
+            LibretroDroid.resetCheat()
+        }
+    }
+
     fun unserializeState(data: ByteArray, useEmulationThread: Boolean = true): Boolean {
         return runOnEmulationThread(useEmulationThread) {
             LibretroDroid.unserializeState(data)
@@ -214,6 +237,26 @@ class GLRetroView(
 
     fun setControllerType(port: Int, type: Int) {
         LibretroDroid.setControllerType(port, type)
+    }
+
+    fun netpacketHasCore(): Boolean = LibretroDroid.netpacketHasCore()
+
+    fun netpacketStartHost(listenPort: Int): Boolean =
+        LibretroDroid.netpacketStartHost(listenPort)
+
+    fun netpacketStartClient(host: String, port: Int): Boolean =
+        LibretroDroid.netpacketStartClient(host, port)
+
+    fun netpacketStop() {
+        LibretroDroid.netpacketStop()
+    }
+
+    fun netpacketIsActive(): Boolean = LibretroDroid.netpacketIsActive()
+
+    fun netpacketPeerCount(): Int = LibretroDroid.netpacketPeerCount()
+
+    fun setNetpacketPeerListener(listener: LibretroDroid.NetpacketPeerListener?) {
+        LibretroDroid.setNetpacketPeerListener(listener)
     }
 
     fun getVariables(): Array<Variable> {
@@ -321,9 +364,14 @@ class GLRetroView(
     inner class Renderer : GLSurfaceView.Renderer {
         override fun onDrawFrame(gl: GL10) = catchExceptions {
             if (isEmulationReady) {
-                LibretroDroid.step(this@GLRetroView)
-                lifecycle?.coroutineScope?.launch {
-                    retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                val newFrame = LibretroDroid.step(this@GLRetroView)
+                if (RetroAchievements.active) {
+                    RetroAchievements.INSTANCE.nativeDoFrame()
+                }
+                if (newFrame) {
+                    lifecycle?.coroutineScope?.launch {
+                        retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                    }
                 }
             }
         }
@@ -419,6 +467,13 @@ class GLRetroView(
             is ShaderConfig.CRT -> GLRetroShader(LibretroDroid.SHADER_CRT)
             is ShaderConfig.LCD -> GLRetroShader(LibretroDroid.SHADER_LCD)
             is ShaderConfig.Sharp -> GLRetroShader(LibretroDroid.SHADER_SHARP)
+            is ShaderConfig.SGSR -> GLRetroShader(
+                LibretroDroid.SHADER_UPSCALE_SGSR,
+                mapOf(
+                    LibretroDroid.SHADER_UPSCALE_SGSR_PARAM_PREPASSES to config.prePasses.toString(),
+                    LibretroDroid.SHADER_UPSCALE_SGSR_PARAM_BASE to config.base,
+                )
+            )
             is ShaderConfig.CUT -> GLRetroShader(
                 LibretroDroid.SHADER_UPSCALE_CUT,
                 buildParams(
@@ -511,6 +566,8 @@ class GLRetroView(
 
     companion object {
         private val TAG_LOG = GLRetroView::class.java.simpleName
+
+        private const val GRAPHICS_TEARDOWN_TIMEOUT_MS = 2000L
 
         const val MOTION_SOURCE_DPAD = LibretroDroid.MOTION_SOURCE_DPAD
         const val MOTION_SOURCE_ANALOG_LEFT = LibretroDroid.MOTION_SOURCE_ANALOG_LEFT

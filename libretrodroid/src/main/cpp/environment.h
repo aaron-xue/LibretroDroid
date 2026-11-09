@@ -85,8 +85,11 @@ public:
 
     retro_hw_context_reset_t getHwContextReset() const;
     retro_hw_context_reset_t getHwContextDestroy() const;
+    void clearHwContextDestroy();
 
     struct retro_disk_control_callback* getRetroDiskControlCallback() const;
+
+    const struct retro_memory_map* getMemoryMap() const;
 
     int getPixelFormat() const;
     bool isUseHwAcceleration() const;
@@ -131,6 +134,10 @@ private:
     retro_hw_context_reset_t hw_context_reset = nullptr;
     retro_hw_context_reset_t hw_context_destroy = nullptr;
     struct retro_disk_control_callback *retro_disk_control_callback = nullptr;
+
+    std::vector<struct retro_memory_descriptor> memoryDescriptors;
+    struct retro_memory_map memoryMap {};
+    bool hasMemoryMap = false;
 
     std::string savesDirectory;
     std::string systemDirectory;
