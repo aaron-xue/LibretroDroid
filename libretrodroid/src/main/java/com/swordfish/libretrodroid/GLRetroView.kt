@@ -423,15 +423,17 @@ class GLRetroView(
 
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
-            // Release EGL surface immediately to free ANativeWindow for potential Vulkan use.
-            // Must be done BEFORE initializeCore() so hw_context_reset() has access to the surface.
+            // Release EGL surface immediately to free ANativeWindow for Vulkan.
+            // initializeCore() will create the VulkanContext during retro_load_game().
+            // onVulkanSurfaceCreated() must be called AFTER initializeCore() because
+            // it triggers context_reset which depends on the VulkanContext being ready.
             releaseEGLSurface()
-            val surface = holder.surface
-            if (surface != null) {
-                LibretroDroid.onVulkanSurfaceCreated(surface)
-            }
             initializeCore()
             if (LibretroDroid.isVulkanActive()) {
+                val surface = holder.surface
+                if (surface != null) {
+                    LibretroDroid.onVulkanSurfaceCreated(surface)
+                }
                 isEmulationReady = true
                 isVulkanMode.set(true)
                 startVulkanRenderLoop()
