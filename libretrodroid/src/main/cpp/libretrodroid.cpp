@@ -19,6 +19,8 @@
 
 #include <EGL/egl.h>
 
+#include <android/native_window_jni.h>
+
 #include <string>
 #include <utility>
 #include <vector>

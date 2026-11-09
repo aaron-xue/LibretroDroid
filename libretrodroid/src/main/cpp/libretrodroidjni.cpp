@@ -738,3 +738,5 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_nativeInit
 }
 
 }
+
+}
