@@ -489,12 +489,15 @@ bool Environment::handle_callback_set_rumble_state(
     enum retro_rumble_effect effect,
     uint16_t strength
 ) {
-    if (port < 4) {
-        auto& state = rumbleStates[port];
-        state.port = port;
-        state.effect = effect;
-        state.strength = strength;
+    LOGV("Setting rumble strength for port %i to %i", port, strength);
+    if (port < 0 || port > 3) return false;
+
+    if (effect == RETRO_RUMBLE_STRONG) {
+        rumbleStates[port].strengthStrong = strength;
+    } else if (effect == RETRO_RUMBLE_WEAK) {
+        rumbleStates[port].strengthWeak = strength;
     }
+
     return true;
 }
 
