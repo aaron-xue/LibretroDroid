@@ -28,9 +28,11 @@
 #include <unordered_map>
 #include <array>
 
-#include "../../libretro-common/include/libretro.h"
+#include "libretro.h"
 #include "log.h"
 #include "rumblestate.h"
+
+struct retro_hw_render_context_negotiation_interface_vulkan;
 
 class Environment {
 public:
@@ -108,6 +110,15 @@ public:
 
     const std::vector<std::vector<struct Controller>> &getControllers() const;
 
+    retro_hw_render_context_negotiation_interface_vulkan* getVulkanNegotiationInterface() const;
+    void setVulkanNegotiationInterface(retro_hw_render_context_negotiation_interface_vulkan* iface);
+
+    retro_hw_render_interface* getHwRenderInterface() const;
+    void setHwRenderInterface(retro_hw_render_interface* iface);
+
+    bool isUseVulkan() const;
+    retro_hw_context_type getHwRenderContextType() const;
+
 private:
     bool environment_handle_set_variables(const struct retro_variable* received);
     bool environment_handle_get_variable(struct retro_variable* requested);
@@ -148,6 +159,10 @@ private:
     bool dirtyVariables = false;
 
     std::vector<std::vector<struct Controller>> controllers;
+
+    retro_hw_render_context_negotiation_interface_vulkan* vulkanNegotiationInterface = nullptr;
+    retro_hw_render_interface* hwRenderInterface = nullptr;
+    retro_hw_context_type hwRenderContextType = RETRO_HW_CONTEXT_NONE;
 };
 
 struct Variable {
@@ -164,4 +179,3 @@ public:
 };
 
 #endif //LIBRETRODROID_ENVIRONMENT_H
-

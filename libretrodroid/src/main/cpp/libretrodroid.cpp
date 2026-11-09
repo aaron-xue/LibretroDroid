@@ -96,6 +96,7 @@ void LibretroDroid::resetGlobalVariables() {
     fpsSync = nullptr;
     input = nullptr;
     rumble = nullptr;
+    vulkanContext = nullptr;
 }
 
 int LibretroDroid::availableDisks() {
@@ -183,11 +184,18 @@ std::pair<int8_t*, size_t> LibretroDroid::serializeSRAM() {
 
 void LibretroDroid::onSurfaceChanged(unsigned int width, unsigned int height) {
     LOGD("Performing libretrodroid onSurfaceChanged");
+    if (Environment::getInstance().isUseVulkan()) {
+        return;
+    }
     video->updateScreenSize(width, height);
 }
 
 void LibretroDroid::onSurfaceCreated() {
     LOGD("Performing libretrodroid onSurfaceCreated");
+
+    if (Environment::getInstance().isUseVulkan()) {
+        return;
+    }
 
     struct retro_system_av_info system_av_info {};
     core->retro_get_system_av_info(&system_av_info);
@@ -220,6 +228,45 @@ void LibretroDroid::onSurfaceCreated() {
 
     if (Environment::getInstance().getHwContextReset() != nullptr) {
         Environment::getInstance().getHwContextReset()();
+    }
+}
+
+void LibretroDroid::onVulkanSurfaceCreated(JNIEnv* env, jobject surface) {
+    LOGD("Performing libretrodroid onVulkanSurfaceCreated");
+
+    if (!vulkanContext || !Environment::getInstance().isUseVulkan()) {
+        LOGE("onVulkanSurfaceCreated called but no Vulkan context available");
+        return;
+    }
+
+    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
+    if (!window) {
+        LOGE("Failed to get ANativeWindow from Surface");
+        return;
+    }
+
+    struct retro_system_av_info system_av_info {};
+    core->retro_get_system_av_info(&system_av_info);
+
+    unsigned width = system_av_info.geometry.base_width;
+    unsigned height = system_av_info.geometry.base_height;
+
+    if (width == 0 || height == 0) {
+        width = 1920;
+        height = 1080;
+    }
+
+    if (!vulkanContext->onSurfaceCreated(window, width, height)) {
+        LOGE("Failed to initialize Vulkan surface");
+        ANativeWindow_release(window);
+        return;
+    }
+}
+
+void LibretroDroid::onVulkanSurfaceDestroyed() {
+    LOGD("Performing libretrodroid onVulkanSurfaceDestroyed");
+    if (vulkanContext) {
+        vulkanContext->onSurfaceDestroyed();
     }
 }
 
@@ -297,10 +344,25 @@ void LibretroDroid::create(
 
     core->retro_init();
 
+    if (Environment::getInstance().isUseVulkan() &&
+        Environment::getInstance().getVulkanNegotiationInterface()) {
+
+        LOGD("Initializing Vulkan context");
+        vulkanContext = std::make_unique<VulkanContext>();
+        if (!vulkanContext->initialize(
+                Environment::getInstance().getVulkanNegotiationInterface())) {
+            throw LibretroDroidError("Failed to initialize Vulkan rendering context",
+                ERROR_GL_NOT_COMPATIBLE);
+        }
+        LOGD("Vulkan context initialized successfully in create()");
+    }
+
     preferLowLatencyAudio = lowLatencyAudio;
 
     // HW accelerated cores are only supported on opengles 3.
-    if (Environment::getInstance().isUseHwAcceleration() && openglESVersion < 3) {
+    if (Environment::getInstance().isUseHwAcceleration() &&
+        !Environment::getInstance().isUseVulkan() &&
+        openglESVersion < 3) {
         throw LibretroDroidError("OpenGL ES 3 is required for this Core", ERROR_GL_NOT_COMPATIBLE);
     }
 
@@ -409,6 +471,11 @@ void LibretroDroid::destroy() {
 
     LOGD("Performing libretrodroid destroy");
 
+    if (vulkanContext) {
+        vulkanContext->destroy();
+        vulkanContext = nullptr;
+    }
+
     if (Environment::getInstance().getHwContextDestroy() != nullptr) {
         Environment::getInstance().getHwContextDestroy()();
     }
@@ -459,7 +526,7 @@ void LibretroDroid::step() {
     for (size_t i = 0; i < frames * frameSpeed; i++)
         core->retro_run();
 
-    if (video && !video->rendersInVideoCallback()) {
+    if (video && !Environment::getInstance().isUseVulkan() && !video->rendersInVideoCallback()) {
         video->renderFrame();
     }
 
@@ -496,7 +563,9 @@ float LibretroDroid::getAspectRatio() {
 }
 
 void LibretroDroid::refreshAspectRatio() {
-    video->updateAspectRatio(getAspectRatio());
+    if (video) {
+        video->updateAspectRatio(getAspectRatio());
+    }
 }
 
 void LibretroDroid::setRumbleEnabled(bool enabled) {
@@ -529,6 +598,14 @@ void LibretroDroid::handleVideoRefresh(
     unsigned int height,
     size_t pitch
 ) {
+    if (Environment::getInstance().isUseVulkan()) {
+        if (data == RETRO_HW_FRAME_BUFFER_VALID && vulkanContext) {
+            vulkanContext->handleVideoRefresh();
+            dirtyVideo = true;
+        }
+        return;
+    }
+
     if (video) {
         video->onNewFrame(data, width, height, pitch);
 
@@ -646,9 +723,9 @@ void LibretroDroid::setViewport(Rect viewportRect) {
 void LibretroDroid::setViewportAlignment(unsigned int viewportAlignment) {
     this-> viewportAlignment = viewportAlignment;
 
-    if (video) {
-        this->video->updateViewportAlignment(viewportAlignment);
+    if (video != nullptr) {
+        video->updateViewportAlignment(viewportAlignment);
     }
 }
 
-} //namespace libretrodroid
+} // namespace libretrodroid

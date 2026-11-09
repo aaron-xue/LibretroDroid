@@ -45,6 +45,7 @@
 #include "renderers/es2/imagerendereres2.h"
 #include "renderers/es3/imagerendereres3.h"
 #include "utils/rect.h"
+#include "vulkancontext.h"
 
 namespace libretrodroid {
 
@@ -75,6 +76,8 @@ public:
 
     void onSurfaceCreated();
     void onSurfaceChanged(unsigned int width, unsigned int height);
+    void onVulkanSurfaceCreated(JNIEnv* env, jobject surface);
+    void onVulkanSurfaceDestroyed();
 
     void create(
         unsigned int GLESVersion,
@@ -97,7 +100,6 @@ public:
     void destroy();
 
     void reset();
-
     void loadGameFromPath(const std::string &gamePath);
     void loadGameFromBytes(const int8_t *data, size_t size);
     void loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles);
@@ -136,7 +138,6 @@ public:
 
     void resetGlobalVariables();
 
-    // Handle callbacks
     void handleVideoRefresh(const void *data, unsigned width, unsigned height, size_t pitch);
     size_t handleAudioCallback(const int16_t* data, size_t frames);
     int16_t handleSetInputState(unsigned port, unsigned device, unsigned index, unsigned id);
@@ -184,6 +185,7 @@ private:
     std::unique_ptr<FPSSync> fpsSync;
     std::unique_ptr<Input> input;
     std::unique_ptr<Rumble> rumble;
+    std::unique_ptr<VulkanContext> vulkanContext;
 };
 
 } //namespace libretrodroid

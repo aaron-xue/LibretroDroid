@@ -86,6 +86,8 @@ add_library(libretrodroid SHARED
         microphone/microphone.cpp
         microphone/microphoneinterface.h
         microphone/microphoneinterface.cpp
+        vulkancontext.h
+        vulkancontext.cpp
         ${LIBRETRO_COMMON}
 )
 
@@ -99,4 +101,5 @@ target_link_libraries(libretrodroid
                       EGL
                       oboe
                       GLESv3
+                      vulkan
 )

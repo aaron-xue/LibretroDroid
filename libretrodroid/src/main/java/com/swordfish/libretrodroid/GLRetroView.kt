@@ -311,6 +311,9 @@ class GLRetroView(
         private fun pause() = catchExceptions {
             isEmulationReady = false
             onPause()
+            if (LibretroDroid.isVulkanActive()) {
+                LibretroDroid.onVulkanSurfaceDestroyed()
+            }
             LibretroDroid.pause()
         }
     }
@@ -334,6 +337,9 @@ class GLRetroView(
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
             initializeCore()
+            if (LibretroDroid.isVulkanActive()) {
+                LibretroDroid.onVulkanSurfaceCreated(holder.surface)
+            }
             lifecycle?.coroutineScope?.launch {
                 retroGLEventsSubject.emit(GLRetroEvents.SurfaceCreated)
             }

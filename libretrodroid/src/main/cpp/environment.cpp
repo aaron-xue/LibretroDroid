@@ -30,6 +30,7 @@
 #include "environment.h"
 #include "vfs/vfs.h"
 #include "microphone/microphoneinterface.h"
+#include "vulkancommon/libretro_vulkan.h"
 
 void Environment::initialize(
     const std::string &requiredSystemDirectory,
@@ -47,7 +48,6 @@ void Environment::deinitialize() {
     hw_context_destroy = nullptr;
 
     retro_disk_control_callback = nullptr;
-
     savesDirectory = std::string();
     systemDirectory = std::string();
     language = RETRO_LANGUAGE_ENGLISH;
@@ -65,6 +65,10 @@ void Environment::deinitialize() {
     gameGeometryAspectRatio = -1.0f;
 
     rumbleStates.fill(libretrodroid::RumbleState {});
+
+    vulkanNegotiationInterface = nullptr;
+    hwRenderInterface = nullptr;
+    hwRenderContextType = RETRO_HW_CONTEXT_NONE;
 }
 
 void Environment::updateVariable(const std::string& key, const std::string& value) {
@@ -109,32 +113,22 @@ bool Environment::environment_handle_set_variables(const struct retro_variable* 
 }
 
 bool Environment::environment_handle_get_variable(struct retro_variable* requested) {
-    LOGD("Variable requested %s", requested->key);
-    auto foundVariable = variables.find(std::string(requested->key));
-
-    if (foundVariable == variables.end()) {
-        return false;
+    auto it = variables.find(requested->key);
+    if (it != variables.end()) {
+        requested->value = it->second.value.c_str();
+        return true;
     }
-
-    requested->value = foundVariable->second.value.c_str();
-    return true;
+    return false;
 }
 
 bool Environment::environment_handle_set_controller_info(const struct retro_controller_info* received) {
-    controllers.clear();
-
     unsigned player = 0;
     while (received[player].types != nullptr) {
-
-        auto currentPlayer = received[player];
-
         controllers.emplace_back();
 
         unsigned controller = 0;
-        while (controller < currentPlayer.num_types && currentPlayer.types[controller].desc != nullptr) {
-            auto currentController = currentPlayer.types[controller];
-            LOGD("Received controller for player %d: %d %s", player, currentController.id, currentController.desc);
-
+        while (received[player].types[controller].desc != nullptr) {
+            auto currentController = received[player].types[controller];
             controllers[player].push_back(Controller { currentController.id, currentController.desc });
             controller++;
         }
@@ -147,6 +141,19 @@ bool Environment::environment_handle_set_controller_info(const struct retro_cont
 
 bool Environment::environment_handle_set_hw_render(struct retro_hw_render_callback* hw_render_callback) {
     useHWAcceleration = true;
+
+    hwRenderContextType = hw_render_callback->context_type;
+
+    if (hw_render_callback->context_type == RETRO_HW_CONTEXT_VULKAN) {
+        LOGD("Core requested Vulkan HW rendering context");
+        useDepth = hw_render_callback->depth;
+        useStencil = hw_render_callback->stencil;
+        bottomLeftOrigin = hw_render_callback->bottom_left_origin;
+        hw_context_reset = hw_render_callback->context_reset;
+        hw_context_destroy = hw_render_callback->context_destroy;
+        return true;
+    }
+
     useDepth = hw_render_callback->depth;
     useStencil = hw_render_callback->stencil;
     bottomLeftOrigin = hw_render_callback->bottom_left_origin;
@@ -178,71 +185,63 @@ bool Environment::environment_handle_get_microphone_interface(struct retro_micro
     return true;
 }
 
-void Environment::callback_retro_log(enum retro_log_level level, const char *fmt, ...) {
-    va_list argptr;
-    va_start(argptr, fmt);
-
-    switch (level) {
-#if VERBOSE_LOGGING
-        case RETRO_LOG_DEBUG:
-            __android_log_vprint(ANDROID_LOG_DEBUG, MODULE_NAME_CORE, fmt, argptr);
-            break;
-#endif
-        case RETRO_LOG_INFO:
-            __android_log_vprint(ANDROID_LOG_INFO, MODULE_NAME_CORE, fmt, argptr);
-            break;
-        case RETRO_LOG_WARN:
-            __android_log_vprint(ANDROID_LOG_WARN, MODULE_NAME_CORE, fmt, argptr);
-            break;
-        case RETRO_LOG_ERROR:
-            __android_log_vprint(ANDROID_LOG_ERROR, MODULE_NAME_CORE, fmt, argptr);
-            break;
-        default:
-            // Log nothing in here.
-            break;
-    }
-}
-
-bool Environment::callback_set_rumble_state(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
-    return Environment::getInstance().handle_callback_set_rumble_state(port, effect, strength);
-}
-
-bool Environment::handle_callback_set_rumble_state(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
-    LOGV("Setting rumble strength for port %i to %i", port, strength);
-    if (port < 0 || port > 3) return false;
-
-    if (effect == RETRO_RUMBLE_STRONG) {
-        rumbleStates[port].strengthStrong = strength;
-    } else if (effect == RETRO_RUMBLE_WEAK) {
-        rumbleStates[port].strengthWeak = strength;
-    }
-
-    return true;
-}
-
-bool Environment::callback_environment(unsigned cmd, void *data) {
-    return Environment::getInstance().handle_callback_environment(cmd, data);
-}
-
 bool Environment::handle_callback_environment(unsigned cmd, void *data) {
     switch (cmd) {
-        case RETRO_ENVIRONMENT_GET_CAN_DUPE:
-            *((bool*) data) = true;
+        case RETRO_ENVIRONMENT_SET_ROTATION:
+            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION: %i", *(unsigned*) data);
+            screenRotation = (float) (*(unsigned*) data);
+            screenRotationUpdated = true;
             return true;
 
-        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
-            LOGD("Called SET_PIXEL_FORMAT");
-            pixelFormat = *static_cast<enum retro_pixel_format *>(data);
+        case RETRO_ENVIRONMENT_GET_OVERSCAN: {
+            LOGD("Called RETRO_ENVIRONMENT_GET_OVERSCAN");
+            *((bool*) data) = false;
             return true;
         }
 
-        case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
-            LOGD("Called SET_INPUT_DESCRIPTORS");
-            return false;
+        case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
+            LOGD("Called RETRO_ENVIRONMENT_GET_CAN_DUPE");
+            *((bool*) data) = true;
+            return true;
+        }
 
-        case RETRO_ENVIRONMENT_GET_VARIABLE:
+        case RETRO_ENVIRONMENT_GET_VARIABLE: {
             LOGD("Called RETRO_ENVIRONMENT_GET_VARIABLE");
             return environment_handle_get_variable(static_cast<struct retro_variable*>(data));
+        }
+
+        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
+            LOGD("Called RETRO_ENVIRONMENT_SET_CONTROLLER_INFO");
+            return environment_handle_set_controller_info(static_cast<const struct retro_controller_info*>(data));
+
+        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
+            LOGD("Called RETRO_ENVIRONMENT_SET_MEMORY_MAPS");
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
+            LOGD("Called RETRO_ENVIRONMENT_SET_PIXEL_FORMAT");
+            pixelFormat = (*(unsigned*) data);
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_SYSTEM_DIRECTORY:
+            LOGD("Called RETRO_ENVIRONMENT_SET_SYSTEM_DIRECTORY");
+            ((struct retro_system_directory*) data)->path = Utils::cloneToCString(systemDirectory);
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+            LOGD("Called RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY");
+            ((struct retro_system_directory*) data)->path = Utils::cloneToCString(savesDirectory);
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
+            LOGD("Called RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE");
+            retro_disk_control_callback = (struct retro_disk_control_callback*) data;
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_LANGUAGE:
+            LOGD("Called RETRO_ENVIRONMENT_GET_LANGUAGE");
+            *((unsigned*) data) = language;
+            return true;
 
         case RETRO_ENVIRONMENT_SET_VARIABLES:
             LOGD("Called RETRO_ENVIRONMENT_SET_VARIABLES");
@@ -257,13 +256,29 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
 
         case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
             LOGD("Called RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER");
-            *((unsigned*) data) = retro_hw_context_type::RETRO_HW_CONTEXT_OPENGLES3;
+            *((unsigned*) data) = RETRO_HW_CONTEXT_VULKAN;
             return true;
         }
 
         case RETRO_ENVIRONMENT_SET_HW_RENDER:
             LOGD("Called RETRO_ENVIRONMENT_SET_HW_RENDER");
             return environment_handle_set_hw_render(static_cast<struct retro_hw_render_callback*>(data));
+
+        case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
+            LOGD("Called RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE");
+            auto* iface = (retro_hw_render_context_negotiation_interface_vulkan*) data;
+            setVulkanNegotiationInterface(iface);
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE: {
+            LOGD("Called RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE");
+            if (hwRenderInterface) {
+                *(const retro_hw_render_interface**) data = hwRenderInterface;
+                return true;
+            }
+            return false;
+        }
 
         case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE:
             LOGD("Called RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE");
@@ -275,95 +290,29 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
             ((struct retro_log_callback*) data)->log = &callback_retro_log;
             return true;
 
-        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
-            LOGD("Called RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY");
-            *(const char**) data = savesDirectory.c_str();
-            return !savesDirectory.empty();
-
-        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
-            LOGD("Called RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY");
-            *(const char**) data = systemDirectory.c_str();
-            return !systemDirectory.empty();
-
-        case RETRO_ENVIRONMENT_SET_ROTATION: {
-            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION");
-            unsigned screenRotationIndex = (*static_cast<unsigned*>(data));
-            screenRotation = screenRotationIndex * (float) (-M_PI / 2.0);
-            screenRotationUpdated = true;
-            return true;
-        }
-
-        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: {
-            LOGD("Called RETRO_ENVIRONMENT_SET_ROTATION");
-            retro_disk_control_callback = static_cast<struct retro_disk_control_callback*>(data);
-            return true;
-        }
-
-        case RETRO_ENVIRONMENT_GET_PERF_INTERFACE:
-            LOGD("Called RETRO_ENVIRONMENT_GET_PERF_INTERFACE");
-            return false;
-
-            // TODO... RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO can also change frame-rate
-        case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
         case RETRO_ENVIRONMENT_SET_GEOMETRY: {
-            struct retro_game_geometry *geometry = static_cast<struct retro_game_geometry *>(data);
-            gameGeometryHeight = geometry->base_height;
-            gameGeometryWidth = geometry->base_width;
-            gameGeometryAspectRatio = geometry->aspect_ratio;
-            gameGeometryUpdated = true;
+            LOGD("Called RETRO_ENVIRONMENT_SET_GEOMETRY");
+            auto* geo = (struct retro_game_geometry*) data;
+            if (geo) {
+                gameGeometryUpdated = true;
+                gameGeometryWidth = geo->base_width;
+                gameGeometryHeight = geo->base_height;
+                gameGeometryAspectRatio = geo->aspect_ratio;
+            }
             return true;
         }
-
-        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
-            LOGD("Called RETRO_ENVIRONMENT_SET_CONTROLLER_INFO");
-            return environment_handle_set_controller_info(static_cast<const struct retro_controller_info*>(data));
-
-        case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
-            LOGD("Called RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE");
-            return false;
-
-        case RETRO_ENVIRONMENT_GET_LANGUAGE:
-            LOGD("Called RETRO_ENVIRONMENT_GET_LANGUAGE");
-            *((unsigned*) data) = language;
-            return true;
 
         case RETRO_ENVIRONMENT_GET_VFS_INTERFACE:
             LOGD("Called RETRO_ENVIRONMENT_GET_VFS_INTERFACE");
-            return environment_handle_get_vfs_interface(static_cast<struct retro_vfs_interface_info*>(data));
+            return environment_handle_get_vfs_interface((struct retro_vfs_interface_info*) data);
 
         case RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE:
             LOGD("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");
-            return environment_handle_get_microphone_interface(static_cast<struct retro_microphone_interface*>(data));
+            return environment_handle_get_microphone_interface((struct retro_microphone_interface*) data);
 
         default:
-            LOGD("callback environment has been called: %u", cmd);
+            LOGD("Unhandled environ %d", cmd);
             return false;
-    }
-}
-
-void Environment::setLanguage(const std::string& androidLanguage) {
-    std::unordered_map<std::string, unsigned> languages {
-            { "en", RETRO_LANGUAGE_ENGLISH },
-            { "jp", RETRO_LANGUAGE_JAPANESE },
-            { "fr", RETRO_LANGUAGE_FRENCH },
-            { "es", RETRO_LANGUAGE_SPANISH },
-            { "de", RETRO_LANGUAGE_GERMAN },
-            { "it", RETRO_LANGUAGE_ITALIAN },
-            { "nl", RETRO_LANGUAGE_DUTCH },
-            { "pt", RETRO_LANGUAGE_PORTUGUESE_PORTUGAL },
-            { "ru", RETRO_LANGUAGE_RUSSIAN },
-            { "ko", RETRO_LANGUAGE_KOREAN },
-            { "zh", RETRO_LANGUAGE_CHINESE_TRADITIONAL },
-            { "eo", RETRO_LANGUAGE_ESPERANTO },
-            { "pl", RETRO_LANGUAGE_POLISH },
-            { "vi", RETRO_LANGUAGE_VIETNAMESE },
-            { "ar", RETRO_LANGUAGE_ARABIC },
-            { "el", RETRO_LANGUAGE_GREEK },
-            { "tr", RETRO_LANGUAGE_TURKISH }
-    };
-
-    if (languages.find(androidLanguage) != languages.end()) {
-        language = languages[androidLanguage];
     }
 }
 
@@ -403,12 +352,12 @@ float Environment::getScreenRotation() const {
     return screenRotation;
 }
 
-bool Environment::isGameGeometryUpdated() const {
-    return gameGeometryUpdated;
+bool Environment::isScreenRotationUpdated() const {
+    return screenRotationUpdated;
 }
 
-void Environment::clearGameGeometryUpdated() {
-    gameGeometryUpdated = false;
+void Environment::clearScreenRotationUpdated() {
+    screenRotationUpdated = false;
 }
 
 unsigned int Environment::getGameGeometryWidth() const {
@@ -423,24 +372,47 @@ float Environment::getGameGeometryAspectRatio() const {
     return gameGeometryAspectRatio;
 }
 
+bool Environment::isGameGeometryUpdated() const {
+    return gameGeometryUpdated;
+}
+
+void Environment::clearGameGeometryUpdated() {
+    gameGeometryUpdated = false;
+}
+
+void Environment::setLanguage(const std::string& androidLanguage) {
+    if (androidLanguage == "ja") {
+        language = RETRO_LANGUAGE_JAPANESE;
+    } else if (androidLanguage == "ko") {
+        language = RETRO_LANGUAGE_KOREAN;
+    } else if (androidLanguage == "zh_CN") {
+        language = RETRO_LANGUAGE_CHINESE_SIMPLIFIED;
+    } else if (androidLanguage == "zh_TW") {
+        language = RETRO_LANGUAGE_CHINESE_TRADITIONAL;
+    } else {
+        language = RETRO_LANGUAGE_ENGLISH;
+    }
+}
+
+void Environment::setEnableVirtualFileSystem(bool value) {
+    useVirtualFileSystem = value;
+}
+
+void Environment::setEnableMicrophone(bool value) {
+    enableMicrophone = value;
+}
+
+std::array<libretrodroid::RumbleState, 4> & Environment::getLastRumbleStates() {
+    return rumbleStates;
+}
+
 const std::vector<struct Variable> Environment::getVariables() const {
     std::vector<struct Variable> result;
+    result.reserve(variables.size());
 
-    std::for_each(
-        variables.begin(),
-        variables.end(),
-        [&](std::pair<std::string, struct Variable> item) {
-            result.push_back(item.second);
-        }
-    );
-
-    std::sort(
-        result.begin(),
-        result.end(),
-        [](struct Variable v1, struct Variable v2) {
-            return v1.key < v2.key;
-        }
-    );
+    std::for_each(variables.begin(), variables.end(), [&](auto &it) {
+        result.push_back(it.second);
+    });
 
     return result;
 }
@@ -449,34 +421,72 @@ const std::vector<std::vector<struct Controller>> &Environment::getControllers()
     return controllers;
 }
 
+retro_hw_render_context_negotiation_interface_vulkan* Environment::getVulkanNegotiationInterface() const {
+    return vulkanNegotiationInterface;
+}
+
+void Environment::setVulkanNegotiationInterface(retro_hw_render_context_negotiation_interface_vulkan* iface) {
+    vulkanNegotiationInterface = iface;
+}
+
+retro_hw_render_interface* Environment::getHwRenderInterface() const {
+    return hwRenderInterface;
+}
+
+void Environment::setHwRenderInterface(retro_hw_render_interface* iface) {
+    hwRenderInterface = iface;
+}
+
+bool Environment::isUseVulkan() const {
+    return hwRenderContextType == RETRO_HW_CONTEXT_VULKAN;
+}
+
+retro_hw_context_type Environment::getHwRenderContextType() const {
+    return hwRenderContextType;
+}
+
 float Environment::retrieveGameSpecificAspectRatio() {
-    if (getGameGeometryAspectRatio() > 0) {
-        return getGameGeometryAspectRatio();
+    return gameGeometryAspectRatio;
+}
+
+bool Environment::handle_callback_set_rumble_state(
+    unsigned port,
+    enum retro_rumble_effect effect,
+    uint16_t strength
+) {
+    if (port < 4) {
+        auto& state = rumbleStates[port];
+        state.port = port;
+        state.effect = effect;
+        state.strength = strength;
     }
+    return true;
+}
 
-    if (getGameGeometryWidth() > 0 && getGameGeometryHeight() > 0) {
-        return (float) getGameGeometryWidth() / (float) getGameGeometryHeight();
+void Environment::callback_retro_log(enum retro_log_level level, const char *fmt, ...) {
+    char buffer[4096] = {0};
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    switch(level) {
+        case RETRO_LOG_DEBUG: LOGE("debug: %s", buffer); break;
+        case RETRO_LOG_INFO: LOGE("info: %s", buffer); break;
+        case RETRO_LOG_WARN: LOGE("warn: %s", buffer); break;
+        case RETRO_LOG_ERROR: LOGE("error: %s", buffer); break;
+        default: LOGE("%s", buffer); break;
     }
-
-    return -1.0f;
 }
 
-bool Environment::isScreenRotationUpdated() const {
-    return screenRotationUpdated;
+bool Environment::callback_set_rumble_state(
+    unsigned port,
+    enum retro_rumble_effect effect,
+    uint16_t strength
+) {
+    return Environment::getInstance().handle_callback_set_rumble_state(port, effect, strength);
 }
 
-void Environment::clearScreenRotationUpdated() {
-    screenRotationUpdated = false;
-}
-
-std::array<libretrodroid::RumbleState, 4>& Environment::getLastRumbleStates() {
-    return rumbleStates;
-}
-
-void Environment::setEnableVirtualFileSystem(bool value) {
-    this->useVirtualFileSystem = value;
-}
-
-void Environment::setEnableMicrophone(bool value) {
-    this->enableMicrophone = value;
+bool Environment::callback_environment(unsigned cmd, void *data) {
+    return Environment::getInstance().handle_callback_environment(cmd, data);
 }

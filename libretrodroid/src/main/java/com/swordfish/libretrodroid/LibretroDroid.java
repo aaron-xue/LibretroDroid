@@ -19,6 +19,7 @@ package com.swordfish.libretrodroid;
 
 import java.util.List;
 
+import android.view.Surface;
 public class LibretroDroid {
 
     static {
@@ -141,4 +142,8 @@ public class LibretroDroid {
 
     public static native Controller[][] getControllers();
     public static native void setControllerType(int port, int type);
+
+    public static native void onVulkanSurfaceCreated(Surface surface);
+    public static native void onVulkanSurfaceDestroyed();
+    public static native boolean isVulkanActive();
 }

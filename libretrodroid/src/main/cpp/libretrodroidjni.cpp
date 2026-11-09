@@ -606,6 +606,36 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_refreshAsp
     LibretroDroid::getInstance().refreshAspectRatio();
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onVulkanSurfaceCreated(
+    JNIEnv* env,
+    jclass obj,
+    jobject surface
+) {
+    try {
+        LibretroDroid::getInstance().onVulkanSurfaceCreated(env, surface);
+    } catch (std::exception &exception) {
+        LOGE("Error in onVulkanSurfaceCreated: %s", exception.what());
+        JavaUtils::throwRetroException(env, ERROR_GENERIC);
+    }
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onVulkanSurfaceDestroyed(
+    JNIEnv* env,
+    jclass obj
+) {
+    try {
+        LibretroDroid::getInstance().onVulkanSurfaceDestroyed();
+    } catch (std::exception &exception) {
+        LOGE("Error in onVulkanSurfaceDestroyed: %s", exception.what());
+        JavaUtils::throwRetroException(env, ERROR_GENERIC);
+    }
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_isVulkanActive(
+    JNIEnv* env,
+    jclass obj
+) {
+    return Environment::getInstance().isUseVulkan() ? JNI_TRUE : JNI_FALSE;
 }
 
 }
