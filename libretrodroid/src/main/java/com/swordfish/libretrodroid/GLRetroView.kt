@@ -97,6 +97,7 @@ class GLRetroView(
         preserveEGLContextOnPause = true
         setEGLContextClientVersion(openGLESVersion)
         setRenderer(Renderer())
+        renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
         keepScreenOn = true
     }
 
@@ -366,13 +367,16 @@ class GLRetroView(
         @OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
         private fun resume() = catchExceptions {
             LibretroDroid.resume()
-            onResume()
-            if (isVulkanMode.get() && (vulkanThread == null || !vulkanThread!!.isAlive)) {
-                val surface = holder.surface
-                if (surface != null && LibretroDroid.isVulkanActive()) {
-                    LibretroDroid.onVulkanSurfaceCreated(surface)
+            if (isVulkanMode.get()) {
+                if (vulkanThread == null || !vulkanThread!!.isAlive) {
+                    val surface = holder.surface
+                    if (surface != null && LibretroDroid.isVulkanActive()) {
+                        LibretroDroid.onVulkanSurfaceCreated(surface)
+                    }
+                    startVulkanRenderLoop()
                 }
-                startVulkanRenderLoop()
+            } else {
+                onResume()
             }
             isEmulationReady = true
         }
@@ -423,20 +427,20 @@ class GLRetroView(
 
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
-            // Release EGL surface immediately to free ANativeWindow for Vulkan.
-            // initializeCore() will create the VulkanContext during retro_load_game().
-            // onVulkanSurfaceCreated() must be called AFTER initializeCore() because
-            // it triggers context_reset which depends on the VulkanContext being ready.
-            releaseEGLSurface()
             initializeCore()
             if (LibretroDroid.isVulkanActive()) {
-                val surface = holder.surface
-                if (surface != null) {
-                    LibretroDroid.onVulkanSurfaceCreated(surface)
+                Handler(Looper.getMainLooper()).post {
+                    queueEvent {
+                        releaseEGLSurface()
+                        val surface = holder.surface
+                        if (surface != null) {
+                            LibretroDroid.onVulkanSurfaceCreated(surface)
+                        }
+                        isEmulationReady = true
+                        isVulkanMode.set(true)
+                        startVulkanRenderLoop()
+                    }
                 }
-                isEmulationReady = true
-                isVulkanMode.set(true)
-                startVulkanRenderLoop()
             }
         }
     }
