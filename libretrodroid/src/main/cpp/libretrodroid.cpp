@@ -294,7 +294,8 @@ void LibretroDroid::onSurfaceCreated() {
 
     video = std::unique_ptr<Video>(newVideo);
 
-    if (Environment::getInstance().getHwContextReset() != nullptr) {
+    if (!Environment::getInstance().isUseVulkan() &&
+        Environment::getInstance().getHwContextReset() != nullptr) {
         Environment::getInstance().getHwContextReset()();
     }
 }
@@ -412,18 +413,6 @@ void LibretroDroid::create(
 
     core->retro_init();
 
-    if (Environment::getInstance().isUseVulkan() &&
-        Environment::getInstance().getVulkanNegotiationInterface()) {
-
-        LOGD("Initializing Vulkan context");
-        vulkanContext = std::make_unique<VulkanContext>();
-        if (!vulkanContext->initialize(
-                Environment::getInstance().getVulkanNegotiationInterface())) {
-            throw LibretroDroidError("Failed to initialize Vulkan rendering context",
-                ERROR_GL_NOT_COMPATIBLE);
-        }
-        LOGD("Vulkan context initialized successfully in create()");
-    }
 
     preferLowLatencyAudio = lowLatencyAudio;
 
@@ -463,6 +452,7 @@ void LibretroDroid::loadGameFromPath(const std::string& gamePath) {
         throw std::runtime_error("Cannot load game");
     }
 
+    initializeVulkanIfNeeded();
     afterGameLoad();
 }
 
@@ -490,6 +480,7 @@ void LibretroDroid::loadGameFromBytes(const int8_t *data, size_t size) {
         throw std::runtime_error("Cannot load game");
     }
 
+    initializeVulkanIfNeeded();
     afterGameLoad();
 }
 
@@ -531,6 +522,7 @@ void LibretroDroid::loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles) 
         throw std::runtime_error("Cannot load game");
     }
 
+    initializeVulkanIfNeeded();
     afterGameLoad();
 }
 
@@ -785,6 +777,29 @@ void LibretroDroid::afterGameLoad() {
     updateAudioSampleRateMultiplier();
 
     defaultAspectRatio = findDefaultAspectRatio(system_av_info);
+}
+
+void LibretroDroid::initializeVulkanIfNeeded() {
+    if (!Environment::getInstance().isUseVulkan() ||
+        !Environment::getInstance().getVulkanNegotiationInterface()) {
+        return;
+    }
+
+    LOGD("Initializing Vulkan context after retro_load_game");
+    vulkanContext = std::make_unique<VulkanContext>();
+    if (!vulkanContext->initialize(
+            Environment::getInstance().getVulkanNegotiationInterface())) {
+        LOGE("Failed to initialize Vulkan rendering context");
+        throw LibretroDroidError("Failed to initialize Vulkan rendering context",
+            ERROR_GL_NOT_COMPATIBLE);
+    }
+    LOGD("Vulkan context initialized successfully");
+
+    auto hwContextReset = Environment::getInstance().getHwContextReset();
+    if (hwContextReset) {
+        LOGD("Calling hw_context_reset for Vulkan");
+        hwContextReset();
+    }
 }
 
 float LibretroDroid::findDefaultAspectRatio(const retro_system_av_info& system_av_info) {
